@@ -1,0 +1,22 @@
+.dashboard { 
+    padding: 2rem; 
+    max-width: 1200px; 
+    margin: 0 auto; 
+}
+
+.chart-container { 
+    margin: 2rem 0; 
+    height: 400px; 
+}
+
+.attack-path { 
+    stroke: #ff6b6b; 
+    stroke-width: 2; 
+}
+
+.ai-recommendation { 
+    background: #f8f9fa; 
+    padding: 1rem; 
+    margin: 1rem 0; 
+    border-radius: 8px; 
+}

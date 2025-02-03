@@ -1,0 +1,30 @@
+# Core Dependencies
+os
+subprocess
+asyncio
+re
+json
+
+# Reconnaissance Module
+shodan==1.28.0
+pywayback==0.4.0
+neo4j==5.5.0
+
+# Vulnerability Scanner
+tensorflow==2.10.0
+transformers==4.26.0
+semgrep==0.110.0
+
+# Exploit Framework
+docker==6.0.0
+
+# Configuration and Payload Handling
+pyyaml==6.0
+
+# Miscellaneous
+requests==2.28.1
+scikit-learn==1.1.2
+
+# Reporting (Frontend - React)
+# Note: React is not a Python library, so it's not included here.
+# Use `npm install react react-dom` for the frontend.

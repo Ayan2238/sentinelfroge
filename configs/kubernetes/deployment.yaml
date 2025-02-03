@@ -1,0 +1,6 @@
+# Kubernetes deployment
+replicas: 100
+resources:
+  limits:
+    ai-engine: 4GPUs
+    scanner-nodes: 1000mCPU
