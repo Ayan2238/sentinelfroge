@@ -9,11 +9,11 @@ class ReconMaster:
         # Initialize Neo4j driver for attack surface visualization
         self.neo4j_driver = GraphDatabase.driver(
             "bolt://localhost:7687",
-            auth=("neo4j", "your_password")  # Replace with your Neo4j credentials
+            auth=("neo4j", "Y9ITKFXGUwXkVkLWUs0ABpomDtQZ8SN5SOL7yqA5tMU")  # Replace with your Neo4j credentials
         )
         
         # Initialize Shodan API
-        self.shodan_api = shodan.Shodan(os.getenv("SHODAN_KEY"))
+        self.shodan_api = shodan.Shodan(os.getenv("XcSqdrwtrqcq99MGV8qsCNEPrXbLJR7j"))
     
     def map_attack_surface(self, domain):
         """Generate interactive attack graph for the target domain"""
