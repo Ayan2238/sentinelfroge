@@ -1,0 +1,116 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "sentinelforge"
+version = "2.0.0"
+description = "AI-Powered Professional Security Assessment Framework"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "SentinelForge Team" }]
+keywords = ["security", "penetration-testing", "vulnerability-scanner", "ethical-hacking"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+requires-python = ">=3.10"
+
+dependencies = [
+    "pyyaml>=6.0",
+    "click>=8.1",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dns = ["dnspython>=2.4"]
+full = [
+    "dnspython>=2.4",
+    "requests>=2.31",
+    "jinja2>=3.1",
+    "shodan>=1.28",
+    "neo4j>=5.5",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.12",
+    "ruff>=0.1",
+    "mypy>=1.5",
+]
+
+[project.scripts]
+sf = "sentinelforge.cli.main:main"
+sentinelforge = "sentinelforge.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/sentinelforge/sentinelforge"
+Documentation = "https://sentinelforge.readthedocs.io"
+Issues = "https://github.com/sentinelforge/sentinelforge/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sentinelforge*"]
+
+[tool.setuptools.package-data]
+"sentinelforge" = ["py.typed"]
+"configs" = ["*.yaml", "profiles/*.yaml"]
+
+# ─────────────────────────────────────────────────────────────────
+# Ruff (linting + formatting)
+# ─────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["sentinelforge"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "RUF"]
+ignore = [
+    "S101",   # assert usage in tests
+    "S603",   # subprocess calls
+    "S605",   # start of process
+    "B008",   # function calls in defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "E501"]
+
+# ─────────────────────────────────────────────────────────────────
+# Mypy
+# ─────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+warn_return_any = false
+
+# ─────────────────────────────────────────────────────────────────
+# Pytest
+# ─────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with -m 'not slow')",
+    "network: marks tests requiring network access",
+]
+
+[tool.coverage.run]
+source = ["sentinelforge"]
+omit = ["tests/*", "sentinelforge/cli/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]

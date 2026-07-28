@@ -1,0 +1,81 @@
+# SentinelForge Configuration
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# This file is the base configuration. Override any value here.
+# Environment variables (SF_*) take highest priority.
+
+version: "2.0.0"
+
+# ─────────────────────────────────────────────────────────────────
+# General settings
+# ─────────────────────────────────────────────────────────────────
+general:
+  output_dir: output
+  log_level: INFO          # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  max_threads: 10
+  timeout: 30              # seconds per request / connection
+  retries: 3
+  user_agent: "SentinelForge/2.0 (Security Scanner; +https://github.com/sentinelforge)"
+
+# ─────────────────────────────────────────────────────────────────
+# Network settings
+# ─────────────────────────────────────────────────────────────────
+network:
+  proxy: null              # e.g. "http://127.0.0.1:8080"
+  verify_ssl: false        # Set true in production/CI
+  rate_limit: 10           # max requests per second (0 = unlimited)
+  connect_timeout: 10
+  read_timeout: 30
+
+# ─────────────────────────────────────────────────────────────────
+# Plugin settings
+# ─────────────────────────────────────────────────────────────────
+plugins:
+  enabled:
+    - dns
+    - http
+    - ssl
+    - web
+    - osint
+    - network
+  disabled: []
+  plugin_dir: null         # path to custom plugin directory
+
+# ─────────────────────────────────────────────────────────────────
+# Scanning settings
+# ─────────────────────────────────────────────────────────────────
+scanning:
+  profile: normal          # fast | normal | deep | stealth | web | cloud
+  max_depth: 3
+  follow_redirects: true
+  max_redirects: 10
+  scope: domain            # strict | domain | subdomain | ip | cidr
+
+# ─────────────────────────────────────────────────────────────────
+# Reporting
+# ─────────────────────────────────────────────────────────────────
+reporting:
+  formats:
+    - html
+    - json
+  include_evidence: true
+  include_raw_requests: false
+  severity_threshold: info   # min severity to include in reports
+
+# ─────────────────────────────────────────────────────────────────
+# Integrations (all disabled by default — configure via env vars)
+# Use environment variables to supply API keys:
+#   SF_SHODAN_API_KEY=your_key
+#   SF_NEO4J_URI=bolt://localhost:7687
+#   SF_NEO4J_USER=neo4j
+#   SF_NEO4J_PASSWORD=your_password
+# ─────────────────────────────────────────────────────────────────
+integrations:
+  shodan:
+    enabled: false
+    api_key: null          # Override via SF_SHODAN_API_KEY env var
+
+  neo4j:
+    enabled: false
+    uri: "bolt://localhost:7687"
+    user: neo4j
+    password: null         # Override via SF_NEO4J_PASSWORD env var

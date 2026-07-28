@@ -1,0 +1,23 @@
+# Stealth scan profile — slow, passive-first, low detection risk
+general:
+  max_threads: 2
+  timeout: 20
+
+network:
+  rate_limit: 2             # max 2 req/sec
+
+scanning:
+  profile: stealth
+  max_depth: 2
+  scope: strict
+
+plugins:
+  enabled:
+    - dns
+    - ssl
+    - osint
+  disabled:
+    - http
+    - cloud
+    - network
+    - web

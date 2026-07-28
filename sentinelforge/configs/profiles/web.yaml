@@ -1,0 +1,19 @@
+# Web scan profile — comprehensive web application security assessment
+general:
+  max_threads: 10
+  timeout: 30
+
+scanning:
+  profile: web
+  max_depth: 4
+  scope: domain
+
+plugins:
+  enabled:
+    - http
+    - ssl
+    - web
+    - osint
+  disabled:
+    - network
+    - cloud

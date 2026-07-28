@@ -1,0 +1,22 @@
+# Fast scan profile — minimal, low-noise, quick results
+general:
+  max_threads: 15
+  timeout: 10
+
+scanning:
+  profile: fast
+  max_depth: 1
+  scope: strict
+
+plugins:
+  enabled:
+    - http
+    - ssl
+    - web
+  disabled:
+    - osint
+    - cloud
+    - network
+
+reporting:
+  formats: [json]

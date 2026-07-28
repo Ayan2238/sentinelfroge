@@ -1,0 +1,18 @@
+# Cloud scan profile — AWS, Azure, GCP misconfiguration checks
+general:
+  max_threads: 10
+  timeout: 20
+
+scanning:
+  profile: cloud
+  max_depth: 2
+  scope: domain
+
+plugins:
+  enabled:
+    - cloud
+    - dns
+    - http
+  disabled:
+    - network
+    - ssl
