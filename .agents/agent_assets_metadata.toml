@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "5qIavSUF9iHGsGsqWT0Gi"
+uri = "file://sentinelforge-v2.0.0.zip"
+type = "unspecified"
+title = "SentinelForge v2.0.0"
