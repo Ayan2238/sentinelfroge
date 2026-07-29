@@ -1,45 +1,80 @@
-# [Project name]
+# SentinelForge
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+AI-Powered Professional Security Assessment Framework for authorised penetration testing. Modular, extensible, CLI-first.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+```bash
+# Install (from sentinelforge/ directory)
+cd sentinelforge && pip install -e "."
+
+# Run a scan
+sf scan example.com
+sf scan example.com --profile deep --format html json markdown csv
+
+# Check environment
+sf doctor
+
+# List plugins
+sf plugin list
+
+# View scan history
+sf history
+```
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- **Language:** Python 3.11+
+- **CLI:** Click + Rich
+- **Config:** YAML + `SF_*` environment variable overrides
+- **Testing:** pytest (67 tests, all passing)
+- **Location:** `sentinelforge/` at workspace root (separate from pnpm monorepo)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+```
+sentinelforge/
+  sentinelforge/          ← Python package
+    core/                 ← Engine, Config, Target, Session, Scheduler, Updater
+    modules/              ← Recon, Vulnerability, Exploit, PostExploit
+    plugins/              ← DNS, HTTP, SSL, Web, OSINT, Cloud, Network
+    correlation/          ← De-dup, attack chains, risk scoring
+    reporting/            ← HTML, JSON, Markdown, CSV formatters
+    logging/              ← Coloured, structured logger
+    cli/                  ← `sf` Click CLI
+  configs/                ← config.yaml + 6 scan profiles
+  tests/                  ← 67 unit tests (core, modules, reporting)
+  docs/                   ← architecture, cli-guide, configuration, plugin-dev, troubleshooting
+  pyproject.toml          ← `sf` entry point wired here
+  Dockerfile              ← Multi-stage, non-root runtime
+  docker-compose.yml      ← Scanner + Neo4j + report-viewer
+  .env.example            ← All SF_* env vars documented
+```
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Every scan passes through `SentinelEngine` — no module or plugin runs directly.
+- Modules = full multi-task workflows (recon → vuln → exploit → post-exploit). Plugins = single-purpose protocol checks. Both implement a `initialize → validate/can_run → run → cleanup` lifecycle.
+- All credentials via `SF_*` env vars only — zero hard-coded secrets.
+- No active exploitation: `ExploitValidationModule` only confirms with harmless probes, never destructive payloads.
+- Optional integrations (Shodan, Neo4j) are gated behind config flags; stdlib-only by default.
 
-## Product
+## Scan Profiles
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+`fast` · `normal` · `deep` · `stealth` · `web` · `network` · `cloud`
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Pure Python implementation; no Rust rewrite.
+- No heavy ML dependencies at runtime.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- `pip install -e "."` must be run from inside `sentinelforge/` (where `pyproject.toml` lives).
+- `sf doctor` shows which optional deps are missing; `dnspython`, `requests`, `jinja2` improve functionality but are not required.
+- `configs/` directory must remain alongside the package for profile loading.
 
 ## Pointers
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- See `sentinelforge/docs/` for architecture, CLI guide, configuration, plugin development, and troubleshooting docs.
+- See the `pnpm-workspace` skill for the TypeScript monorepo structure (separate from SentinelForge).

@@ -146,7 +146,7 @@ class ModuleResult:
     def highest_severity(self) -> Severity:
         if not self.findings:
             return Severity.NONE
-        return max(f.severity for f in self.findings, key=lambda s: s.score)
+        return max((f.severity for f in self.findings), key=lambda s: s.score)
 
 
 # ---------------------------------------------------------------------------
