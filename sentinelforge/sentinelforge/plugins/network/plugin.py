@@ -66,7 +66,7 @@ class NetworkPlugin(BasePlugin):
                         evidence=[f"Port {port}/tcp ({service}): {banner[:200]}"],
                         recommendation=(
                             f"Configure {service} to suppress version information in banners. "
-                            "Disable {service} if it is not required."
+                            f"Disable {service} if it is not required."
                         ),
                         tags=["network", "banner", service.lower()],
                         raw_data={"port": port, "service": service, "banner": banner[:500]},

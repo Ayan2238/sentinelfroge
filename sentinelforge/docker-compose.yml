@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────────────
 # SentinelForge — Docker Compose
 # ─────────────────────────────────────────────────────────────────
@@ -25,22 +23,23 @@ services:
       - SF_SHODAN_API_KEY=${SF_SHODAN_API_KEY:-}
       - SF_NEO4J_URI=${SF_NEO4J_URI:-bolt://neo4j:7687}
       - SF_NEO4J_USER=${SF_NEO4J_USER:-neo4j}
-      - SF_NEO4J_PASSWORD=${SF_NEO4J_PASSWORD:-sentinelforge}
+      # Set SF_NEO4J_PASSWORD only when the Neo4j integration is enabled.
+      - SF_NEO4J_PASSWORD
       - SF_OUTPUT_DIR=/output
     networks:
       - sf-network
-    depends_on:
-      neo4j:
-        condition: service_healthy
 
   # ── Neo4j attack graph database ─────────────────────────────────
   neo4j:
     image: neo4j:5.13
+    profiles:
+      - neo4j
     ports:
       - "7474:7474"   # Browser UI
       - "7687:7687"   # Bolt protocol
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-sentinelforge}
+      # Set NEO4J_PASSWORD before starting the optional Neo4j profile.
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
       - NEO4J_PLUGINS=["graph-data-science"]
       - NEO4J_dbms_memory_heap_max__size=1G
     volumes:

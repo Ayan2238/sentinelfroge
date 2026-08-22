@@ -17,12 +17,11 @@ class CloudPlugin(BasePlugin):
     Cloud misconfiguration checks:
     - Public AWS S3 bucket detection
     - Azure Blob Storage public access
-    - GCP Cloud Storage public access
     - Exposed .env / cloud credential files
     """
 
     name = "cloud"
-    description = "AWS S3, Azure Blob, and GCP Storage public access checks"
+    description = "AWS S3 and Azure Blob public access checks"
     category = "cloud"
 
     def initialize(self) -> None:

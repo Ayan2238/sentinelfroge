@@ -98,7 +98,8 @@ class ConfigManager:
         ``"fast"``, ``"deep"``).
     """
 
-    _BUILTIN_PROFILE_DIR = Path(__file__).parent.parent.parent / "configs" / "profiles"
+    _PACKAGE_CONFIG_DIR = Path(__file__).parent.parent.parent / "configs"
+    _SYSTEM_CONFIG_DIR = Path("/etc/sentinelforge")
     _PROJECT_CONFIG = Path("configs/config.yaml")
     _USER_CONFIG = Path.home() / ".config" / "sentinelforge" / "config.yaml"
 
@@ -111,7 +112,7 @@ class ConfigManager:
         self._profile_name: str | None = None
 
         # Load file layers
-        self._merge(self._load_yaml(self._PROJECT_CONFIG))
+        self._merge(self._load_default_config())
         self._merge(self._load_yaml(self._USER_CONFIG))
         if config_path:
             self._merge(self._load_yaml(Path(config_path), required=True))
@@ -190,14 +191,35 @@ class ConfigManager:
         except yaml.YAMLError as exc:
             raise ConfigError(f"Failed to parse config file {path}: {exc}") from exc
 
+    def _load_default_config(self) -> dict[str, Any]:
+        """Load the first available project/package/system config layer.
+
+        The checkout uses ``configs/config.yaml`` while installed Docker
+        images place the same files under ``/etc/sentinelforge``.
+        """
+        candidates = (
+            self._PROJECT_CONFIG,
+            self._PACKAGE_CONFIG_DIR / "config.yaml",
+            self._SYSTEM_CONFIG_DIR / "config.yaml",
+        )
+        for path in candidates:
+            if path.exists():
+                return self._load_yaml(path)
+        return {}
+
     def _apply_profile(self, name: str) -> None:
         """Merge a scan profile on top of the current config."""
-        profile_path = self._BUILTIN_PROFILE_DIR / f"{name}.yaml"
-        if not profile_path.exists():
-            # Unknown profile — silently fall back to normal
-            return
-        self._merge(self._load_yaml(profile_path))
-        self._profile_name = name
+        profile_paths = (
+            self._PROJECT_CONFIG.parent / "profiles" / f"{name}.yaml",
+            self._PACKAGE_CONFIG_DIR / "profiles" / f"{name}.yaml",
+            self._SYSTEM_CONFIG_DIR / "profiles" / f"{name}.yaml",
+        )
+        for profile_path in profile_paths:
+            if profile_path.exists():
+                self._merge(self._load_yaml(profile_path))
+                self._profile_name = name
+                return
+        # Unknown profile — leave the base configuration unchanged.
 
     def _apply_env_overrides(self) -> None:
         """

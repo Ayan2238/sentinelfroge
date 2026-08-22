@@ -1,5 +1,5 @@
 """
-SentinelForge – AI-Powered Security Assessment Framework
+SentinelForge – Professional Security Assessment Framework
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Professional, modular penetration testing and security auditing framework
 for authorized security assessments.
@@ -15,7 +15,7 @@ Usage::
 
 __version__ = "2.0.0"
 __author__ = "SentinelForge Team"
-__description__ = "AI-Powered Professional Security Assessment Framework"
+__description__ = "Professional Security Assessment Framework"
 
 from sentinelforge.core.engine import SentinelEngine
 

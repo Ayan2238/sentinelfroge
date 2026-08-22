@@ -20,7 +20,6 @@ Usage examples::
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,8 +34,6 @@ try:
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
-    from rich.text import Text
-    from rich import print as rprint
     _HAS_RICH = True
     _console = Console()
 except ImportError:
@@ -59,11 +56,11 @@ def _print_banner() -> None:
     if _HAS_RICH:
         _console.print(f"[bold cyan]{_BANNER}[/bold cyan]")
         _console.print(
-            f"  [dim]v{_VERSION}  ·  AI-Powered Professional Security Assessment Framework[/dim]\n"
+            f"  [dim]v{_VERSION}  ·  Professional Security Assessment Framework[/dim]\n"
         )
     else:
         print(_BANNER)
-        print(f"  v{_VERSION}  ·  AI-Powered Professional Security Assessment Framework\n")
+        print(f"  v{_VERSION}  ·  Professional Security Assessment Framework\n")
 
 
 def _err(msg: str) -> None:
@@ -98,7 +95,7 @@ if _HAS_CLICK:
     def cli(ctx: click.Context) -> None:
         """
         \b
-        SentinelForge — AI-Powered Security Assessment Framework
+        SentinelForge — Professional Security Assessment Framework
         For authorised penetration testing and security auditing only.
         """
         if ctx.invoked_subcommand is None:
@@ -112,7 +109,7 @@ if _HAS_CLICK:
     @click.option(
         "--profile", "-p",
         default="normal",
-        type=click.Choice(["fast", "normal", "deep", "stealth", "web", "cloud", "network", "api"]),
+        type=click.Choice(["fast", "normal", "deep", "stealth", "web", "cloud", "network"]),
         help="Scan profile to use.",
         show_default=True,
     )
@@ -174,8 +171,9 @@ if _HAS_CLICK:
                 quiet=quiet,
             )
 
-            # Optionally override formats from CLI
+            # CLI formats must update the already-created report engine too.
             engine._config.set("reporting.formats", list(formats))
+            engine._report_engine._formats = list(formats)
 
             result = engine.scan(
                 targets=list(targets),
@@ -296,8 +294,7 @@ if _HAS_CLICK:
             "stealth": "Low-rate, passive-first scan to avoid detection.",
             "web":     "Web-focused: headers, XSS, SQLi, cookies, CORS.",
             "network": "Network-focused: ports, banners, service fingerprinting.",
-            "cloud":   "Cloud-focused: S3, Azure Blob, GCP Storage checks.",
-            "api":     "API-focused: endpoint discovery, auth testing.",
+            "cloud":   "Cloud-focused: S3 and Azure Blob checks.",
         }
         if _HAS_RICH:
             table = Table(title="Scan Profiles", show_lines=True)
@@ -360,7 +357,7 @@ if _HAS_CLICK:
         ctx = click.get_current_context()
         ctx.invoke(
             scan,
-            targets=(session_id,),  # placeholder; engine handles resume
+            targets=(session_id,),  # engine uses the session ID to load the saved targets
             profile="normal",
             output=output,
             formats=("html", "json"),
@@ -420,10 +417,22 @@ if _HAS_CLICK:
 
     @cli.command()
     def update() -> None:
-        """Check for and apply updates."""
+        """Check PyPI for an available update."""
         _info("Checking for updates…")
-        time.sleep(0.5)
-        _info("SentinelForge is up to date.")
+        from sentinelforge.core.updater import check_for_update, upgrade_command
+
+        result = check_for_update()
+        if result["error"]:
+            _err(result["error"])
+            sys.exit(1)
+        if result["update_available"]:
+            _info(
+                f"Update available: {result['current_version']} → "
+                f"{result['latest_version']}"
+            )
+            _info(f"Run: {upgrade_command()}")
+        else:
+            _ok(f"SentinelForge {result['current_version']} is up to date.")
 
     # ──────────────────────────────────────────────────────────────────────
     # Helpers

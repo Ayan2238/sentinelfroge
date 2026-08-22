@@ -1,4 +1,4 @@
-# Cloud scan profile — AWS, Azure, GCP misconfiguration checks
+# Cloud scan profile — AWS S3 and Azure Blob misconfiguration checks
 general:
   max_threads: 10
   timeout: 20

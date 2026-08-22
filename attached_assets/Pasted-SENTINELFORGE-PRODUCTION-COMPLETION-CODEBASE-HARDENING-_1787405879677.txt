@@ -1,0 +1,913 @@
+SENTINELFORGE — PRODUCTION COMPLETION & CODEBASE HARDENING PROMPT
+
+ROLE
+
+You are a Senior Cybersecurity Software Engineer, Senior Python Developer, Senior Rust Developer, AI Engineer, DevOps Engineer, Security Engineer, QA Engineer, and Software Architect.
+
+Your mission is to transform the existing SentinelForge codebase into a genuinely working, production-quality commercial cybersecurity platform.
+
+This is an existing project, not a greenfield project.
+
+CRITICAL PRINCIPLE
+
+DO NOT rewrite SentinelForge from scratch.
+
+DO NOT replace the existing architecture.
+
+DO NOT rebuild working modules unnecessarily.
+
+DO NOT destroy existing functionality simply to make implementation easier.
+
+Your job is to understand what already exists, preserve what works, and finish what is incomplete, fake, broken, unnecessary, unsafe, or poorly implemented.
+
+The final project should look and behave like the same SentinelForge project, but with the incomplete parts replaced by real working implementations.
+
+---
+
+1. FIRST: FULL CODEBASE AUDIT
+
+Before modifying anything, inspect the entire repository.
+
+Review:
+
+- Every Python file
+- Every Rust module
+- Every configuration file
+- Every dependency
+- Every Flask route
+- Every API endpoint
+- Every frontend component
+- Every reporting component
+- Every reconnaissance module
+- Every vulnerability module
+- Every exploitation/post-exploitation component
+- Every payload component
+- Every AI component
+- Every Docker/Kubernetes file
+- Every test
+- Every script
+- Every README/documentation file
+
+Do not begin by randomly modifying files.
+
+First determine:
+
+1. What is genuinely implemented.
+2. What is partially implemented.
+3. What is only a placeholder.
+4. What contains hardcoded/demo behavior.
+5. What is dead or unused.
+6. What is duplicated.
+7. What is broken.
+8. What is missing.
+9. What is insecure.
+10. What is unnecessarily complicated.
+11. What dependencies are actually required.
+12. What advertised functionality does not currently work.
+
+Create an internal implementation map before making major changes.
+
+---
+
+2. PRESERVE THE EXISTING PROJECT
+
+The existing architecture is valuable.
+
+Therefore:
+
+- Preserve the folder structure.
+- Preserve existing module responsibilities.
+- Preserve working APIs.
+- Preserve working interfaces.
+- Preserve naming where practical.
+- Preserve existing integrations.
+- Preserve Python/Rust integration.
+- Preserve existing functionality.
+- Maintain backward compatibility wherever reasonably possible.
+
+Only change architecture when the existing implementation makes the requested functionality impossible or fundamentally unsafe.
+
+If architectural change becomes necessary, make the smallest possible change and explain why.
+
+---
+
+3. REMOVE ALL HARDCODED / FAKE / DEMO IMPLEMENTATIONS
+
+This is one of the highest-priority tasks.
+
+Search the entire repository for:
+
+- hardcoded scan results
+- fake vulnerability results
+- dummy responses
+- example output returned as real data
+- hardcoded technology names
+- hardcoded target information
+- static severity values
+- fake confidence scores
+- fake AI responses
+- placeholder payloads
+- sample reports presented as real reports
+- mock API responses
+- temporary return statements
+- test data accidentally used in production
+- development-only shortcuts
+- fake success responses
+- hardcoded URLs
+- hardcoded IP addresses
+- hardcoded credentials
+- hardcoded tokens
+- hardcoded API keys
+- hardcoded passwords
+- hardcoded database credentials
+- fake detection logic
+
+Examples of unacceptable production behavior:
+
+return True
+
+when the function is supposed to perform real detection.
+
+return {"status": "success"}
+
+when no operation actually occurred.
+
+technologies = ["WordPress", "Apache"]
+
+when those technologies are supposed to be detected dynamically.
+
+severity = "High"
+
+when severity should be calculated from actual findings.
+
+Replace these with genuine implementations.
+
+---
+
+4. DISTINGUISH CONSTANTS FROM HARDCODED LOGIC
+
+Do NOT blindly remove every constant.
+
+Legitimate constants may remain, such as:
+
+- protocol defaults
+- timeout defaults
+- HTTP status mappings
+- regex patterns
+- supported file extensions
+- static configuration defaults
+- security thresholds
+- protocol identifiers
+
+The objective is to remove fake behavior, not legitimate deterministic configuration.
+
+---
+
+5. COMPLETE EVERY PLACEHOLDER
+
+Search for all:
+
+- TODO
+- FIXME
+- XXX
+- pass
+- NotImplementedError
+- placeholder
+- stub
+- mock
+- dummy
+- example
+- temporary
+- coming soon
+- future implementation
+- empty function bodies
+- empty handlers
+- commented-out implementations
+
+Every production-relevant placeholder must either:
+
+A. Become a real implementation
+
+OR
+
+B. Be removed if the functionality is genuinely unnecessary.
+
+Do not simply replace:
+
+pass
+
+with another meaningless implementation.
+
+---
+
+6. REMOVE UNNECESSARY CODE
+
+Identify and remove:
+
+- unused imports
+- unused variables
+- unused functions
+- unreachable branches
+- dead modules
+- duplicate implementations
+- obsolete compatibility code
+- abandoned experiments
+- commented-out blocks
+- unused dependencies
+- redundant helper functions
+- duplicated configuration
+- unused frontend components
+- obsolete Rust code
+
+Do NOT delete something merely because it currently appears unused.
+
+First determine whether it is:
+
+- imported dynamically,
+- used through Flask routing,
+- loaded through configuration,
+- called by another language,
+- used by Docker/Kubernetes,
+- part of an extension interface,
+- or intended as a plugin API.
+
+Remove only genuinely unnecessary code.
+
+---
+
+7. COMPLETE MISSING IMPLEMENTATIONS
+
+Every function that is required by the existing architecture must actually work.
+
+Complete missing functionality including, where already intended by the project:
+
+Reconnaissance
+
+- target validation
+- URL normalization
+- HTTP discovery
+- technology fingerprinting
+- CMS detection
+- framework detection
+- server detection
+- WAF fingerprinting
+- DNS enumeration
+- subdomain discovery
+- robots.txt parsing
+- sitemap parsing
+- historical URL discovery
+- API endpoint discovery
+- JavaScript analysis
+- metadata extraction
+
+External services must be implemented through clean adapters.
+
+---
+
+8. EXTERNAL SERVICES
+
+External integrations may require:
+
+- API keys
+- tokens
+- paid subscriptions
+- user credentials
+
+These are the only intentional external placeholders.
+
+Never invent credentials.
+
+Never hardcode secrets.
+
+Use environment variables or secure configuration.
+
+For example:
+
+SHODAN_API_KEY=
+GITHUB_TOKEN=
+OPENAI_API_KEY=
+
+The application should:
+
+- detect missing credentials,
+- provide a clear configuration error,
+- disable only the dependent feature,
+- continue operating where possible.
+
+Do not make the entire application unusable simply because an optional external API key is missing.
+
+---
+
+9. AI ENGINE
+
+Complete the AI architecture without fabricating intelligence.
+
+Implement where supported by the existing design:
+
+- model/provider abstraction
+- model loading
+- inference pipeline
+- prompt construction
+- response validation
+- model caching
+- payload generation
+- confidence scoring
+- result ranking
+- retry handling
+- provider failure handling
+
+If external AI providers are required:
+
+- create clean adapters,
+- use environment variables,
+- handle missing keys properly,
+- never fabricate model output.
+
+If an AI feature cannot operate without an external provider, report that honestly instead of returning fake results.
+
+---
+
+10. PAYLOAD ENGINE
+
+Complete the existing payload architecture.
+
+Implement where applicable:
+
+- payload selection
+- context-aware payloads
+- technology-aware mutation
+- framework-aware payloads
+- deduplication
+- filtering
+- ranking
+- encoding
+- validation
+- safe payload storage
+
+Do not generate fake "successful exploit" results.
+
+A generated payload is not evidence of a vulnerability.
+
+---
+
+11. VULNERABILITY ENGINE
+
+Implement genuine detection logic for the vulnerability classes already supported by the project.
+
+Each detector should provide:
+
+- request construction
+- safe request handling
+- response analysis
+- evidence
+- confidence
+- severity
+- affected target
+- reproducibility information
+- remediation guidance where appropriate
+
+Avoid false positives.
+
+Never report a vulnerability merely because a function was executed.
+
+Where possible, require actual technical evidence.
+
+---
+
+12. RECONNAISSANCE RELIABILITY
+
+Every network operation must have:
+
+- timeout
+- retry policy where appropriate
+- exception handling
+- rate limiting where appropriate
+- cancellation support
+- clear error reporting
+
+Do not allow one failed target/module to crash the entire scan.
+
+---
+
+13. SCAN ORCHESTRATION
+
+Complete the scan pipeline.
+
+It should properly manage:
+
+Target
+  ↓
+Validation
+  ↓
+Reconnaissance
+  ↓
+Fingerprinting
+  ↓
+Discovery
+  ↓
+Vulnerability Analysis
+  ↓
+Result Aggregation
+  ↓
+Risk Analysis
+  ↓
+Reporting
+
+Implement:
+
+- task orchestration
+- progress tracking
+- module execution
+- result aggregation
+- failure recovery
+- cancellation
+- retries
+- logging
+
+---
+
+14. REPORTING ENGINE
+
+Reports must contain real scan data.
+
+Implement supported formats such as:
+
+- HTML
+- JSON
+- Markdown
+- PDF where the dependency is available and appropriate
+
+Reports should include:
+
+- target
+- scan timestamp
+- executive summary
+- findings
+- severity
+- confidence
+- evidence
+- affected URLs
+- technical details
+- remediation
+- module information
+
+Never generate a report containing fake findings simply to make the report appear populated.
+
+---
+
+15. FLASK APPLICATION
+
+Review every route and API endpoint.
+
+Ensure:
+
+- correct HTTP methods
+- input validation
+- authentication where required
+- authorization where required
+- proper status codes
+- structured responses
+- exception handling
+- request limits
+- safe file handling
+- safe subprocess handling
+- background task support where intended
+- scan progress support
+
+No endpoint should return a fake success response.
+
+---
+
+16. SECURITY HARDENING
+
+Perform a complete security review.
+
+Look specifically for:
+
+- command injection
+- shell injection
+- path traversal
+- SSRF
+- unsafe deserialization
+- XSS
+- SQL/NoSQL injection
+- insecure subprocess usage
+- arbitrary file writes
+- insecure file uploads
+- authentication bypass
+- authorization failures
+- secret exposure
+- debug mode exposure
+- unsafe CORS
+- weak session handling
+- insecure temporary files
+- insufficient input validation
+
+Fix genuine issues without destroying intended functionality.
+
+---
+
+17. PYTHON QUALITY
+
+Review every Python module for:
+
+- exception handling
+- type consistency
+- resource cleanup
+- logging
+- imports
+- circular dependencies
+- async/sync misuse
+- race conditions
+- duplicated code
+- unnecessary complexity
+
+Do not hide errors with:
+
+except Exception:
+    pass
+
+Use meaningful exceptions and logging.
+
+---
+
+18. RUST QUALITY
+
+Review every Rust module.
+
+Remove unnecessary:
+
+unwrap()
+
+and:
+
+expect()
+
+where failure can be handled properly.
+
+Implement:
+
+- Result-based error handling
+- safe parsing
+- input validation
+- resource cleanup
+- ownership-safe design
+- useful logging
+- tests
+
+Do not remove Rust simply because Python would be easier.
+
+---
+
+19. PERFORMANCE
+
+Profile before making major optimizations.
+
+Look for:
+
+- repeated network requests
+- unnecessary filesystem operations
+- repeated parsing
+- excessive memory usage
+- repeated model loading
+- inefficient loops
+- unnecessary serialization
+- connection creation
+- duplicate work
+
+Implement improvements where justified:
+
+- caching
+- connection reuse
+- concurrency
+- async tasks
+- batching
+- lazy loading
+- model reuse
+
+Do not introduce unnecessary complexity merely for theoretical performance.
+
+---
+
+20. DEPENDENCY AUDIT
+
+Review every dependency.
+
+For each dependency determine:
+
+- Why is it required?
+- Is it actually imported?
+- Is it duplicated?
+- Is the version appropriate?
+- Is it abandoned?
+- Is it security-sensitive?
+- Can it be removed?
+
+Remove unnecessary dependencies.
+
+Do not add libraries simply to replace code that already works.
+
+---
+
+21. TESTING
+
+Create or improve tests for the actual implementation.
+
+Include:
+
+- unit tests
+- integration tests
+- regression tests
+- API tests
+- parser tests
+- fingerprinting tests
+- reporting tests
+- Rust tests
+
+Test both:
+
+Success paths
+
+and:
+
+Failure paths
+
+Examples:
+
+- invalid URL
+- unreachable host
+- timeout
+- malformed response
+- missing API key
+- invalid configuration
+- failed external service
+- empty result
+- unexpected server response
+
+---
+
+22. END-TO-END VERIFICATION
+
+Do not consider the project complete merely because:
+
+python app.py
+
+starts successfully.
+
+Verify the actual workflows.
+
+At minimum:
+
+Application starts
+       ↓
+Target accepted
+       ↓
+Scan starts
+       ↓
+Recon executes
+       ↓
+Fingerprinting executes
+       ↓
+Analysis executes
+       ↓
+Results are aggregated
+       ↓
+Report is generated
+       ↓
+Errors are handled
+
+Every stage must perform real work.
+
+---
+
+23. CLI
+
+If a CLI already exists, complete and test it.
+
+If a CLI does NOT currently exist:
+
+Do not advertise fictional commands in the README.
+
+Do not add:
+
+sf --help
+sf scan example.com
+
+unless those commands are actually implemented and tested.
+
+A CLI can be added later without pretending it already exists.
+
+---
+
+24. FRONTEND / DASHBOARD
+
+Review all frontend components.
+
+Remove:
+
+- fake statistics
+- demo findings
+- hardcoded scan results
+- fake progress
+- unused components
+
+Connect the interface to real backend data.
+
+Ensure:
+
+- loading states
+- error states
+- empty states
+- real progress
+- real findings
+- real reports
+
+---
+
+25. DOCKER & KUBERNETES
+
+Verify deployment files.
+
+Ensure:
+
+- correct paths
+- correct ports
+- correct environment variables
+- correct dependencies
+- health checks
+- reproducible builds
+- no secrets inside images/manifests
+
+Do not leave deployment configuration that cannot actually start the application.
+
+---
+
+26. DOCUMENTATION
+
+After implementation, update documentation based on what actually works.
+
+README must contain:
+
+- project overview
+- actual features
+- architecture
+- installation
+- configuration
+- actual usage
+- supported integrations
+- environment variables
+- troubleshooting
+- limitations
+- roadmap
+
+Never advertise unfinished functionality as completed.
+
+---
+
+27. COMMERCIAL QUALITY
+
+The final codebase should be suitable as a commercial-quality foundation.
+
+That means:
+
+- predictable behavior
+- maintainable code
+- real implementations
+- useful error messages
+- secure defaults
+- reproducible installation
+- real output
+- documented configuration
+- tests
+- no obvious fake/demo logic
+- no unnecessary dead code
+
+Commercial quality does not mean pretending everything is perfect.
+
+If a feature genuinely depends on a paid external service, document that requirement clearly.
+
+---
+
+28. CHANGE MANAGEMENT
+
+Before modifying a file:
+
+1. Understand its purpose.
+2. Identify its dependencies.
+3. Identify what uses it.
+4. Determine whether it is working.
+5. Preserve working behavior.
+6. Modify only what is necessary.
+
+Prefer:
+
+Existing implementation
+        ↓
+Identify incomplete/broken portion
+        ↓
+Replace only that portion
+        ↓
+Test
+        ↓
+Integrate
+
+NOT:
+
+Existing project
+        ↓
+Delete everything
+        ↓
+Build new project
+
+---
+
+29. FINAL CODEBASE AUDIT
+
+After implementation, perform another complete repository scan.
+
+Search again for:
+
+- TODO
+- FIXME
+- pass
+- NotImplementedError
+- mock
+- dummy
+- placeholder
+- hardcoded results
+- fake responses
+- secrets
+- unused imports
+- unused dependencies
+- unreachable code
+- dead modules
+- broken imports
+- unsafe exception handling
+- Rust unwrap/expect where avoidable
+
+Do not stop after the first pass.
+
+---
+
+30. FINAL ACCEPTANCE CRITERIA
+
+Do NOT declare the project complete until the following are true:
+
+- [ ] Application starts successfully.
+- [ ] No broken imports.
+- [ ] No required module is missing.
+- [ ] Core workflows execute.
+- [ ] No production placeholder implementations remain.
+- [ ] No fake scan results remain.
+- [ ] No fake vulnerability results remain.
+- [ ] No hardcoded credentials remain.
+- [ ] API keys are configurable through environment variables.
+- [ ] Real reconnaissance results are produced.
+- [ ] Real analysis results are produced.
+- [ ] Results are aggregated correctly.
+- [ ] Reports contain real data.
+- [ ] Errors are handled gracefully.
+- [ ] Security issues identified during review are fixed.
+- [ ] Dead code is removed where confirmed unnecessary.
+- [ ] Unused dependencies are removed where safe.
+- [ ] Python modules are reviewed.
+- [ ] Rust modules are reviewed.
+- [ ] Frontend is connected to real backend data.
+- [ ] Docker configuration is valid.
+- [ ] Kubernetes configuration is valid where supported.
+- [ ] Tests cover critical functionality.
+- [ ] README matches reality.
+
+---
+
+MOST IMPORTANT INSTRUCTION
+
+Do not make SentinelForge merely LOOK complete.
+
+Make the implementation actually work.
+
+Never replace a placeholder with another placeholder.
+
+Never replace fake output with prettier fake output.
+
+Never hide an error to make a test pass.
+
+Never claim a feature works unless it has been implemented and verified.
+
+Never destroy working code just because rewriting it is easier.
+
+Never invent API credentials.
+
+Never fabricate AI responses.
+
+Never fabricate vulnerability findings.
+
+Never fabricate scan results.
+
+If something cannot be implemented because an external dependency, API key, paid service, model, or unavailable environment is required, implement the integration properly, handle the missing dependency gracefully, and clearly document the requirement.
+
+The objective is:
+
+«Take the existing SentinelForge codebase, preserve its identity and architecture, remove the unfinished/dead/fake parts, implement the missing functionality properly, harden it, test it, and turn it into a genuinely usable cybersecurity tool.»
+
+Improve the implementation—not the identity—of SentinelForge.

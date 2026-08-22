@@ -33,7 +33,7 @@ class SslPlugin(BasePlugin):
     category = "ssl"
 
     _WEAK_PROTOCOLS = {
-        "SSLv2":  ssl.PROTOCOL_TLS_CLIENT,   # placeholder — we probe via handshake
+        # Legacy protocol label retained for reporting; support is probed by handshake.
         "SSLv3":  ssl.PROTOCOL_TLS_CLIENT,
         "TLSv1":  ssl.PROTOCOL_TLS_CLIENT,
         "TLSv1.1": ssl.PROTOCOL_TLS_CLIENT,

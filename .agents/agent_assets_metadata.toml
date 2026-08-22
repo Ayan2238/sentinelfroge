@@ -6,3 +6,10 @@ id = "5qIavSUF9iHGsGsqWT0Gi"
 uri = "file://sentinelforge-v2.0.0.zip"
 type = "unspecified"
 title = "SentinelForge v2.0.0"
+
+[[outputs]]
+id = "1vivvnK86lo33HOGOuWOF"
+uri = "file://sentinelforge-v2.0.0-hardened.zip"
+type = "unspecified"
+title = "SentinelForge v2.0.0 — Hardened Build"
+description = "Latest hardened SentinelForge build with targeted production fixes, tests, packaging, Docker configuration, and documentation."

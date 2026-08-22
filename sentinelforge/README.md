@@ -1,6 +1,6 @@
 # 🛡️ SentinelForge v2.0
 
-**AI-Powered Professional Security Assessment Framework**
+**Professional Security Assessment Framework**
 
 SentinelForge is a modular, extensible penetration testing and security auditing framework for authorised security assessments. It combines passive reconnaissance, active vulnerability scanning, exploit validation, post-exploitation analysis, and professional reporting into a single cohesive tool.
 
@@ -124,7 +124,7 @@ sentinelforge/
 │   ├── ssl/               ← Certificate expiry, weak TLS, hostname mismatch
 │   ├── web/               ← Technology fingerprinting, WordPress checks
 │   ├── osint/             ← robots.txt, security.txt, API docs
-│   ├── cloud/             ← S3, Azure Blob, GCP Storage public access
+│   ├── cloud/             ← S3 and Azure Blob public access
 │   └── network/           ← Banner grabbing, service fingerprinting
 ├── correlation/
 │   └── engine.py          ← De-duplication, attack chains, risk scoring
@@ -160,7 +160,7 @@ class MyPlugin(BasePlugin):
     category = "web"
 
     def initialize(self) -> None:
-        pass  # one-time setup
+        # Initialise resources here when the plugin needs them.
 
     def can_run(self, target) -> bool:
         from sentinelforge.core.target import TargetType
@@ -181,7 +181,7 @@ class MyPlugin(BasePlugin):
         return result
 
     def cleanup(self) -> None:
-        pass
+        # Release resources here when the plugin needs them.
 ```
 
 Place the plugin in any Python package and add the path to `configs/config.yaml`:
