@@ -33,8 +33,8 @@ def fetch_latest_version(timeout: int = _REQUEST_TIMEOUT) -> Optional[str]:
         with urllib.request.urlopen(PYPI_URL, timeout=timeout) as resp:  # noqa: S310
             data = json.loads(resp.read().decode())
             return data["info"]["version"]
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Update check failed: %s", exc)
+    except Exception:
+        logger.debug("Update check failed")
         return None
 
 

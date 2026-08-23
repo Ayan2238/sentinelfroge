@@ -167,7 +167,7 @@ Output includes:
 - Required + optional dependencies
 - Config file status
 - Output directory permissions
-- Optional integrations (Shodan, Neo4j)
+- Optional DNS dependency status
 
 ---
 

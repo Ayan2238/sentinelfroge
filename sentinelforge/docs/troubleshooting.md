@@ -80,43 +80,6 @@ sf scan example.com --profile stealth
 
 ---
 
-### Shodan integration not working
-
-1. Set your API key:
-
-```bash
-export SF_SHODAN_API_KEY=your_key_here
-```
-
-2. Confirm it's picked up:
-
-```bash
-sf doctor
-```
-
-3. Check your Shodan plan has API access.
-
----
-
-### Neo4j connection refused
-
-1. Ensure Neo4j is running:
-
-```bash
-docker compose up neo4j
-```
-
-2. Check the Bolt URI:
-
-```bash
-export SF_NEO4J_URI=bolt://localhost:7687
-export SF_NEO4J_PASSWORD=your_password
-```
-
-3. Run `sf doctor` to confirm connectivity.
-
----
-
 ### Scan hangs / never completes
 
 - Lower `max_threads` to reduce load:
@@ -154,11 +117,9 @@ Run `sf doctor` to diagnose any environment issue — it checks:
 |-------|-----------------|
 | Python version | >= 3.10 |
 | Core dependencies | pyyaml, click, rich |
-| Optional dependencies | dnspython, requests, shodan, neo4j |
+| Optional dependencies | dnspython |
 | Config file | Exists, valid YAML, passes validation |
 | Output dir | Exists and is writable |
-| Shodan key | Present in env (not validity) |
-| Neo4j | TCP connectivity to bolt URI |
 
 ---
 

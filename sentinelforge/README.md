@@ -31,7 +31,7 @@ pip install sentinelforge
 # With DNS checks
 pip install "sentinelforge[dns]"
 
-# With all optional integrations (Shodan, Neo4j, …)
+# With all optional DNS functionality
 pip install "sentinelforge[full]"
 
 # Development install
@@ -203,9 +203,6 @@ All settings in `configs/config.yaml`. Override via environment variables:
 | `SF_MAX_THREADS` | `general.max_threads` | Concurrent workers |
 | `SF_TIMEOUT` | `general.timeout` | Request timeout (s) |
 | `SF_PROXY` | `network.proxy` | HTTP proxy URL |
-| `SF_SHODAN_API_KEY` | `integrations.shodan.api_key` | Shodan API key |
-| `SF_NEO4J_URI` | `integrations.neo4j.uri` | Neo4j Bolt URI |
-| `SF_NEO4J_PASSWORD` | `integrations.neo4j.password` | Neo4j password |
 | `SF_PROFILE` | `scanning.profile` | Default scan profile |
 
 ---
@@ -219,7 +216,7 @@ docker build -t sentinelforge:latest .
 # Scan with Docker
 docker run --rm -v $(pwd)/output:/output sentinelforge:latest sf scan example.com
 
-# Full stack with Neo4j
+# Deep scanner run
 docker compose run --rm sf scan example.com --profile deep
 docker compose up report-viewer   # view reports at http://localhost:8080
 ```

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.error import URLError
 
 from sentinelforge.modules.base import BaseModule, Finding, ModuleResult, Severity
+from sentinelforge.core.network import open_url
 
 if TYPE_CHECKING:
     from sentinelforge.core.config import ConfigManager
@@ -236,8 +237,7 @@ class ReconModule(BaseModule):
         host = target.host
         url = f"https://crt.sh/?q=%.{host}&output=json"
         try:
-            from sentinelforge.core.network import ssl_context
-            with urllib.request.urlopen(url, timeout=self._timeout, context=ssl_context(self._config)) as resp:  # noqa: S310
+            with open_url(url, self._config, timeout=self._timeout):
                 import json
                 data = json.loads(resp.read().decode())
         except Exception:  # noqa: BLE001
@@ -284,8 +284,7 @@ class ReconModule(BaseModule):
             f"?url={host}/*&output=json&fl=original&collapse=urlkey&limit=200"
         )
         try:
-            from sentinelforge.core.network import ssl_context
-            with urllib.request.urlopen(url, timeout=self._timeout, context=ssl_context(self._config)) as resp:  # noqa: S310
+            with open_url(url, self._config, timeout=self._timeout):
                 import json
                 data = json.loads(resp.read().decode())
         except Exception:  # noqa: BLE001
@@ -347,8 +346,7 @@ class ReconModule(BaseModule):
         host = target.host
         url = f"https://rdap.org/domain/{host}"
         try:
-            from sentinelforge.core.network import ssl_context
-            with urllib.request.urlopen(url, timeout=self._timeout, context=ssl_context(self._config)) as resp:  # noqa: S310
+            with open_url(url, self._config, timeout=self._timeout):
                 import json
                 data = json.loads(resp.read().decode())
         except Exception:  # noqa: BLE001

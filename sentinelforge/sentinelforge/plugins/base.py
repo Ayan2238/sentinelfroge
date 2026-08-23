@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from sentinelforge.modules.base import Finding, Severity
+from sentinelforge.core.security import redact_value
 
 if TYPE_CHECKING:
     from sentinelforge.core.config import ConfigManager
@@ -36,14 +37,14 @@ class PluginResult:
         self.findings.append(finding)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return redact_value({
             "plugin_name": self.plugin_name,
             "status": self.status,
             "elapsed": round(self.elapsed, 3),
             "findings": [f.to_dict() for f in self.findings],
             "error": self.error,
             "metadata": self.metadata,
-        }
+        })
 
 
 class BasePlugin(ABC):

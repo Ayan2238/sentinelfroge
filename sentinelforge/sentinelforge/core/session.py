@@ -8,12 +8,15 @@ resume, history, and cleanup.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from sentinelforge.core.security import redact_value
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,7 @@ class Session:
         self.finished_at = datetime.now(timezone.utc).isoformat()
 
     def fail(self, reason: str = "") -> None:
+        reason = redact_value(reason)
         self.status = SessionStatus.FAILED
         self.finished_at = datetime.now(timezone.utc).isoformat()
         if reason:
@@ -107,7 +111,7 @@ class Session:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
+        d = redact_value(asdict(self))
         d["status"] = self.status.value
         return d
 
@@ -256,9 +260,20 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def _path(self, session_id: str) -> Path:
-        return self._dir / f"{session_id}.json"
+        if not session_id or Path(session_id).name != session_id or not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", session_id
+        ):
+            raise ValueError("Invalid session identifier.")
+        exact = self._dir / f"{session_id}.json"
+        if exact.exists() or len(session_id) != 8:
+            return exact
+        matches = list(self._dir.glob(f"{session_id}*.json"))
+        if len(matches) == 1:
+            return matches[0]
+        return exact
 
     def _save(self, session: Session) -> None:
         path = self._path(session.session_id)
-        with path.open("w") as fh:
+        with path.open("w", encoding="utf-8") as fh:
             json.dump(session.to_dict(), fh, indent=2, default=str)
+        path.chmod(0o600)

@@ -33,10 +33,6 @@ dependencies = [
 dns = ["dnspython>=2.4"]
 full = [
     "dnspython>=2.4",
-    "requests>=2.31",
-    "jinja2>=3.1",
-    "shodan>=1.28",
-    "neo4j>=5.5",
 ]
 dev = [
     "pytest>=7.4",

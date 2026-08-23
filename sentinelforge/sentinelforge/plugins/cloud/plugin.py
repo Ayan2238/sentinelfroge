@@ -6,6 +6,7 @@ import urllib.request
 from typing import TYPE_CHECKING
 
 from sentinelforge.modules.base import Severity
+from sentinelforge.core.network import open_url
 from sentinelforge.plugins.base import BasePlugin, PluginResult
 
 if TYPE_CHECKING:
@@ -56,8 +57,7 @@ class CloudPlugin(BasePlugin):
 
     def _fetch(self, url: str, timeout: int) -> tuple[int, str]:
         try:
-            from sentinelforge.core.network import ssl_context
-            with urllib.request.urlopen(url, timeout=timeout, context=ssl_context(self._config)) as resp:  # noqa: S310
+            with open_url(url, self._config, timeout=timeout):
                 return resp.status, resp.read(20_000).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             return exc.code, ""

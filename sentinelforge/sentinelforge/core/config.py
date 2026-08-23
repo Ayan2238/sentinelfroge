@@ -188,12 +188,19 @@ class ConfigManager:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("w", encoding="utf-8") as fh:
             yaml.safe_dump(data, fh, sort_keys=False)
+        destination.chmod(0o600)
         return destination
 
     @property
     def data(self) -> dict[str, Any]:
         """Return a shallow copy of the full configuration dict."""
         return dict(self._data)
+
+    @property
+    def redacted_data(self) -> dict[str, Any]:
+        """Return configuration suitable for display or diagnostics."""
+        from sentinelforge.core.security import redact_value
+        return redact_value(self._data)
 
     @property
     def profile(self) -> str:
@@ -296,17 +303,63 @@ class ConfigManager:
             )
 
         max_threads = self.get("general.max_threads", 10)
-        if not isinstance(max_threads, int) or max_threads < 1:
+        if isinstance(max_threads, bool) or not isinstance(max_threads, int) or not 1 <= max_threads <= 256:
             raise ConfigError("general.max_threads must be a positive integer.")
 
+        for key, minimum, maximum in (
+            ("general.timeout", 1, 3600),
+            ("general.retries", 0, 10),
+            ("network.connect_timeout", 1, 3600),
+            ("network.read_timeout", 1, 3600),
+            ("network.rate_limit", 0, 1000),
+            ("scanning.max_depth", 0, 100),
+            ("scanning.max_redirects", 0, 100),
+        ):
+            value = self.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= value <= maximum:
+                raise ConfigError(f"{key} must be between {minimum} and {maximum}.")
+
         valid_formats = {"html", "json", "markdown", "csv", "pdf"}
-        for fmt in self.get("reporting.formats", []):
+        formats = self.get("reporting.formats", [])
+        if not isinstance(formats, list) or not formats:
+            raise ConfigError("reporting.formats must be a non-empty list.")
+        for fmt in formats:
+            if not isinstance(fmt, str):
+                raise ConfigError("reporting.formats entries must be strings.")
             if fmt not in valid_formats:
                 raise ConfigError(
                     f"Unknown report format '{fmt}'. Valid: {valid_formats}."
                 )
         if not isinstance(self.get("network.verify_ssl", True), bool):
             raise ConfigError("network.verify_ssl must be true or false.")
+        for key in ("scanning.follow_redirects", "reporting.include_evidence", "reporting.include_raw_requests"):
+            if not isinstance(self.get(key), bool):
+                raise ConfigError(f"{key} must be true or false.")
+
+        for key in ("plugins.enabled", "plugins.disabled"):
+            value = self.get(key, [])
+            if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+                raise ConfigError(f"{key} must be a list of plugin names.")
+        enabled = set(self.get("plugins.enabled", []))
+        disabled = set(self.get("plugins.disabled", []))
+        if enabled & disabled:
+            raise ConfigError("plugins.enabled and plugins.disabled cannot contain the same plugin.")
+
+        plugin_dir = self.get("plugins.plugin_dir")
+        if plugin_dir is not None and (
+            not isinstance(plugin_dir, (str, list))
+            or (isinstance(plugin_dir, list) and any(not isinstance(item, str) for item in plugin_dir))
+        ):
+            raise ConfigError("plugins.plugin_dir must be a path string or list of path strings.")
+
+        valid_scopes = {"strict", "domain", "subdomain", "ip", "cidr"}
+        if self.get("scanning.scope") not in valid_scopes:
+            raise ConfigError(f"scanning.scope must be one of {sorted(valid_scopes)}.")
+        valid_thresholds = {"info", "low", "medium", "high", "critical"}
+        if self.get("reporting.severity_threshold") not in valid_thresholds:
+            raise ConfigError(
+                f"reporting.severity_threshold must be one of {sorted(valid_thresholds)}."
+            )
 
     def _merge(self, override: dict[str, Any]) -> None:
         """Deep-merge *override* into ``self._data``."""

@@ -64,6 +64,8 @@ def _print_banner() -> None:
 
 
 def _err(msg: str) -> None:
+    from sentinelforge.core.security import redact_text
+    msg = redact_text(msg)
     if _HAS_RICH:
         _console.print(f"[bold red]✗ Error:[/bold red] {msg}", file=sys.stderr)
     else:
@@ -434,7 +436,7 @@ if _HAS_CLICK:
         import json
         cfg = ConfigManager()
         if show:
-            print(json.dumps(cfg.data, indent=2, default=str))
+            print(json.dumps(cfg.redacted_data, indent=2, default=str))
         else:
             _ok(f"Configuration valid. Active profile: {cfg.profile}")
 

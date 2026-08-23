@@ -84,6 +84,25 @@ class TestConfigValidation:
         with pytest.raises(ConfigError, match="Unknown report format"):
             ConfigManager(config_path=f)
 
+    @pytest.mark.parametrize(
+        "yaml_text, message",
+        [
+            ("general:\n  timeout: 0\n", "general.timeout"),
+            ("general:\n  retries: 11\n", "general.retries"),
+            ("network:\n  verify_ssl: maybe\n", "network.verify_ssl"),
+            ("plugins:\n  enabled: dns\n", "plugins.enabled"),
+            ("plugins:\n  enabled: [dns]\n  disabled: [dns]\n", "cannot"),
+            ("reporting:\n  formats: []\n", "reporting.formats"),
+        ],
+    )
+    def test_invalid_operational_values_raise(
+        self, tmp_path: Path, yaml_text: str, message: str
+    ) -> None:
+        config = tmp_path / "invalid.yaml"
+        config.write_text(yaml_text)
+        with pytest.raises(ConfigError, match=message):
+            ConfigManager(config_path=config)
+
 
 class TestConfigEnvOverride:
     def test_env_log_level_override(self, monkeypatch: pytest.MonkeyPatch) -> None:

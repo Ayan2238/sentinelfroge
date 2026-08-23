@@ -6,6 +6,7 @@ import urllib.request
 from typing import TYPE_CHECKING
 
 from sentinelforge.modules.base import Severity
+from sentinelforge.core.network import open_url, ssl_context
 from sentinelforge.plugins.base import BasePlugin, PluginResult
 
 if TYPE_CHECKING:
@@ -60,12 +61,11 @@ class HttpPlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     def _fetch(self, url: str, method: str, timeout: int, ua: str) -> tuple[int, dict]:
-        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(url, method=method)
         req.add_header("User-Agent", ua)
         ctx = ssl_context(self._config)
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+            with open_url(req, self._config, timeout=timeout, context=ctx) as resp:
                 return resp.status, dict(resp.headers)
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers)

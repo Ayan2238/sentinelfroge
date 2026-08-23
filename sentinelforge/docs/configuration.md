@@ -21,7 +21,7 @@ general:
 
 network:
   proxy: null              # http://127.0.0.1:8080
-  verify_ssl: false
+  verify_ssl: true
   rate_limit: 10           # requests/second (0 = unlimited)
 
 plugins:
@@ -37,15 +37,6 @@ reporting:
   formats: [html, json]
   include_evidence: true
 
-integrations:
-  shodan:
-    enabled: false
-    api_key: null          # use SF_SHODAN_API_KEY env var
-  neo4j:
-    enabled: false
-    uri: "bolt://localhost:7687"
-    user: neo4j
-    password: null         # use SF_NEO4J_PASSWORD env var
 ```
 
 ## Environment Variables
@@ -57,10 +48,6 @@ integrations:
 | `SF_MAX_THREADS` | 10 | Concurrent workers |
 | `SF_TIMEOUT` | 30 | Request timeout (s) |
 | `SF_PROXY` | (none) | HTTP proxy URL |
-| `SF_SHODAN_API_KEY` | (none) | Shodan API key |
-| `SF_NEO4J_URI` | bolt://localhost:7687 | Neo4j Bolt URI |
-| `SF_NEO4J_USER` | neo4j | Neo4j username |
-| `SF_NEO4J_PASSWORD` | (none) | Neo4j password |
 | `SF_PROFILE` | normal | Default scan profile |
 
 ## Scan Profiles

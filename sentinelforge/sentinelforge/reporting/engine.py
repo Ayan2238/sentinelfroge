@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from sentinelforge.core.security import redact_text, redact_value
+
 if TYPE_CHECKING:
     from sentinelforge.correlation.engine import CorrelatedReport
     from sentinelforge.core.session import Session
@@ -71,7 +73,11 @@ class ReportEngine:
             except Exception as exc:  # noqa: BLE001
                 # Non-fatal: log and continue
                 import sys
-                print(f"[ReportEngine] Failed to write {fmt} report: {exc}", file=sys.stderr)
+                print(
+                    f"[ReportEngine] Failed to write {fmt} report: "
+                    f"{redact_text(str(exc))}",
+                    file=sys.stderr,
+                )
 
         return written
 
@@ -115,7 +121,7 @@ class ReportEngine:
         session: "Session",
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
+        return redact_value({
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "session": {
                 "id": session.session_id,
@@ -131,4 +137,4 @@ class ReportEngine:
             "statistics": report.statistics,
             "findings": [f.to_dict() for f in report.findings],
             "metadata": metadata,
-        }
+        })

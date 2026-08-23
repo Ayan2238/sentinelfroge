@@ -1,0 +1,455 @@
+SENTINELFORGE — PHASE 2A: SECURITY & RELIABILITY HARDENING
+
+You are continuing work on the EXISTING SentinelForge codebase.
+
+PHASE 1 HAS ALREADY BEEN COMPLETED SUCCESSFULLY.
+
+Previous Phase 1 result:
+- 78 tests passed
+- Plugin enable/disable works
+- Resume workflow works
+- Custom plugin directories work
+- PDF reporting works
+- TLS verification configuration works
+- CLI behavior was verified
+- No known Phase 1 blockers remain
+
+Your task now is ONLY PHASE 2A.
+
+==================================================
+PRIMARY OBJECTIVE
+==================================================
+
+Harden the existing SentinelForge implementation for real-world use by improving:
+
+1. Secret/credential redaction
+2. Configuration validation
+3. Security
+4. Error handling and graceful failure
+5. Network timeout/retry behavior
+6. Dependency security/cleanup
+7. Accurate package metadata
+
+DO NOT redesign SentinelForge.
+
+==================================================
+CRITICAL PRESERVATION RULE
+==================================================
+
+DO NOT rewrite SentinelForge from scratch.
+
+DO NOT replace the existing architecture.
+
+DO NOT replace:
+- scanner engine
+- plugin system
+- configuration system
+- reporting system
+- network layer
+- CLI architecture
+- existing Python/Rust architecture
+
+Do not remove working functionality.
+
+Do not introduce a new framework simply because it is easier.
+
+Do not perform unrelated refactoring.
+
+Before changing anything:
+1. Inspect the existing implementation.
+2. Understand how the relevant component currently works.
+3. Identify the smallest safe change.
+4. Modify only what is required.
+5. Add focused tests.
+6. Run the existing test suite.
+7. Verify that Phase 1 functionality still works.
+
+==================================================
+1. SECRET / CREDENTIAL REDACTION
+==================================================
+
+Audit the existing code for secrets and sensitive values appearing in:
+
+- logs
+- exceptions
+- CLI output
+- reports
+- debug output
+- serialized scan/session data
+- configuration output
+- error messages
+
+Potential sensitive values include:
+- API keys
+- tokens
+- passwords
+- authorization headers
+- bearer tokens
+- cookies/session values
+- private credentials
+- connection strings containing credentials
+- Shodan credentials if configured
+- Neo4j credentials if configured
+- other authentication values
+
+Requirements:
+
+- Never expose secrets in normal logs or error messages.
+- Implement redaction using the existing logging/error architecture where possible.
+- Preserve useful diagnostic information.
+- Do not simply hide every error.
+- Avoid storing plaintext secrets in generated reports or session state where unnecessary.
+- Ensure redaction does not corrupt normal scanner findings.
+
+IMPORTANT:
+Do not hardcode fake credentials.
+Do not create new credentials.
+Do not remove legitimate credential configuration support.
+
+Add tests proving representative secrets are redacted.
+
+==================================================
+2. CONFIGURATION VALIDATION
+==================================================
+
+Audit the existing configuration loading and validation.
+
+Requirements:
+
+- Validate configuration values before they are used.
+- Detect invalid types.
+- Detect invalid enum/choice values.
+- Validate paths where appropriate.
+- Validate numeric ranges.
+- Validate boolean settings.
+- Validate network timeout values.
+- Validate retry settings.
+- Validate TLS settings.
+- Validate plugin configuration.
+- Handle missing optional configuration gracefully.
+- Provide clear actionable configuration errors.
+
+Do not break existing valid configuration files.
+
+Do not introduce unnecessary configuration changes.
+
+Preserve backwards compatibility where practical.
+
+Add tests for:
+- valid configuration
+- invalid configuration
+- missing optional values
+- invalid timeout
+- invalid retry count
+- invalid TLS setting
+- invalid plugin configuration
+
+==================================================
+3. SECURITY REVIEW
+==================================================
+
+Perform a focused security review of the existing SentinelForge code.
+
+Look specifically for:
+
+- unsafe subprocess execution
+- shell command injection risks
+- unsafe path handling
+- path traversal
+- unsafe temporary-file handling
+- insecure file permissions
+- unsafe deserialization
+- unvalidated external input
+- accidental credential exposure
+- unsafe URL handling
+- SSRF risks where applicable
+- insecure TLS behavior
+- overly broad exception handling that hides security failures
+- dangerous defaults
+
+Fix only genuine issues you identify.
+
+IMPORTANT:
+
+Do not add speculative security changes that alter normal scanner behavior without justification.
+
+TLS verification must remain enabled by default.
+
+Do not globally disable certificate verification.
+
+Do not weaken security defaults.
+
+Add focused regression tests for any security issues fixed.
+
+==================================================
+4. ERROR HANDLING & GRACEFUL FAILURE
+==================================================
+
+Audit the existing scanner, plugins, network layer, reporting, configuration, and CLI for failures that can unnecessarily terminate the entire application.
+
+Requirements:
+
+- Handle expected network failures gracefully.
+- Handle invalid targets gracefully.
+- Handle unavailable external services gracefully.
+- Handle malformed plugin/configuration input gracefully.
+- Handle missing files gracefully.
+- Handle permission errors gracefully.
+- Preserve useful error messages.
+- Avoid silently swallowing unexpected exceptions.
+- Do not expose secrets through exceptions.
+
+The scanner should fail gracefully where possible instead of crashing the entire scan because one optional component failed.
+
+Do not hide genuine programming errors.
+
+Add tests for representative failure cases.
+
+==================================================
+5. NETWORK TIMEOUT / RETRY HANDLING
+==================================================
+
+Audit existing network requests.
+
+Requirements:
+
+- Ensure network operations have sensible timeouts.
+- Do not allow a network request to hang indefinitely.
+- Respect the existing configuration architecture.
+- Add retry behavior only where appropriate.
+- Avoid retrying requests that should not be retried.
+- Avoid excessive retries.
+- Avoid retry storms.
+- Preserve existing TLS verification behavior.
+- Handle connection timeout, read timeout, connection reset, DNS failure, and temporary service failures gracefully.
+
+Use the existing network abstraction wherever possible.
+
+Do not create a second network abstraction.
+
+Add focused tests for timeout/retry behavior.
+
+If the project already has timeout/retry configuration, connect and validate it instead of creating duplicate settings.
+
+==================================================
+6. DEPENDENCY REVIEW & CLEANUP
+==================================================
+
+Inspect project dependencies.
+
+Identify:
+
+- unused dependencies
+- duplicate dependencies
+- unnecessary dependencies
+- obviously outdated/incompatible dependencies
+- dependencies that are only required by removed/dead functionality
+
+IMPORTANT:
+
+Do not blindly upgrade every dependency.
+
+Do not introduce breaking dependency upgrades without necessity.
+
+Do not remove a dependency merely because it appears unused without checking the project.
+
+Preserve compatibility.
+
+Only make dependency changes that are clearly justified.
+
+If a security-critical dependency issue is discovered, fix it carefully and test afterward.
+
+==================================================
+7. PACKAGE METADATA ACCURACY
+==================================================
+
+Review package metadata for claims that do not match the implementation.
+
+Remove or correct inaccurate claims such as:
+
+- AI-powered functionality if not actually implemented
+- Shodan integration if not implemented
+- Neo4j integration if not implemented
+- other unsupported features
+
+Do NOT implement those features in Phase 2A.
+
+The goal is simply to make metadata truthful.
+
+Keep the project description aligned with the actual SentinelForge capabilities.
+
+==================================================
+8. TESTING REQUIREMENTS
+==================================================
+
+Create or update focused tests for every Phase 2A change.
+
+At minimum test:
+
+SECRET REDACTION
+- API key/token redaction
+- password redaction
+- authorization header redaction
+- credentials do not appear in logs/reports/errors
+
+CONFIGURATION
+- valid configuration
+- invalid configuration
+- timeout validation
+- retry validation
+- TLS validation
+- plugin configuration validation
+
+SECURITY
+- relevant security regression tests for every genuine issue fixed
+
+ERROR HANDLING
+- network failure
+- invalid target
+- unavailable service
+- malformed configuration
+- missing file
+- permission/error conditions where practical
+
+NETWORK
+- timeout behavior
+- retry behavior
+- retry limits
+- TLS behavior remains secure
+
+METADATA
+- verify inaccurate feature claims have been removed/corrected
+
+==================================================
+9. REGRESSION PROTECTION
+==================================================
+
+After all Phase 2A changes:
+
+Run the existing complete test suite.
+
+Phase 1 functionality MUST remain working.
+
+At minimum verify:
+
+- plugin enable
+- plugin disable
+- plugin persistence
+- custom plugin discovery
+- resume
+- PDF reporting
+- TLS verification
+- CLI behavior
+
+Do not consider Phase 2A complete if Phase 1 functionality regresses.
+
+==================================================
+10. TOOLING
+==================================================
+
+Run whatever project tooling is already configured, such as:
+
+pytest
+compileall
+git diff --check
+ruff
+other existing lint/static checks
+
+If a tool is unavailable, DO NOT install unnecessary tooling merely to claim success.
+
+Clearly report the unavailable tool.
+
+==================================================
+STRICT SCOPE — DO NOT IMPLEMENT THESE
+==================================================
+
+These belong to later phases and MUST NOT be implemented now:
+
+- Shodan integration
+- Neo4j integration
+- AI functionality
+- Dashboard/API
+- Rust acceleration
+- Kubernetes manifests
+- expanded WAF discovery
+- expanded JavaScript discovery
+- expanded sitemap discovery
+- expanded API endpoint discovery
+- advanced PDF styling
+- commercial packaging work
+- full documentation rewrite
+- clean-install verification
+
+Only perform Phase 2A.
+
+==================================================
+STOP CONDITIONS
+==================================================
+
+If you discover that a proposed change would require:
+
+- rewriting a major subsystem
+- replacing the architecture
+- changing unrelated functionality
+- introducing a large new dependency
+- breaking backwards compatibility
+
+STOP and report the issue instead of making a risky rewrite.
+
+Prefer a small safe fix over a large redesign.
+
+==================================================
+PHASE 2A COMPLETION CRITERIA
+==================================================
+
+Phase 2A is complete only when:
+
+[ ] Secrets are properly redacted from relevant logs/errors/reports.
+[ ] Credentials are not accidentally exposed through normal output.
+[ ] Configuration values are properly validated.
+[ ] Invalid configuration fails clearly and safely.
+[ ] Genuine security issues found in the focused review are fixed.
+[ ] Expected failures are handled gracefully.
+[ ] Unexpected programming errors are not silently swallowed.
+[ ] Network requests have appropriate timeout behavior.
+[ ] Retry behavior is controlled and appropriate.
+[ ] TLS verification remains enabled by default.
+[ ] Dependencies have been reviewed and unnecessary ones cleaned only when justified.
+[ ] Package metadata contains no inaccurate unsupported feature claims.
+[ ] Focused Phase 2A tests pass.
+[ ] The complete existing test suite passes.
+[ ] Phase 1 functionality still works.
+[ ] No major architecture has been rewritten.
+[ ] No Phase 2B/2C work has been implemented.
+
+==================================================
+FINAL REPORT
+==================================================
+
+When finished, DO NOT simply say "Phase 2A complete."
+
+Report:
+
+1. Files changed.
+2. Exact changes made.
+3. Security issues discovered.
+4. Security issues fixed.
+5. Configuration changes.
+6. Network timeout/retry changes.
+7. Dependency changes and why they were necessary.
+8. Metadata changes.
+9. Tests added/modified.
+10. Commands actually executed.
+11. Complete test results.
+12. Any tooling that could not be run.
+13. Any remaining Phase 2A issues.
+14. Any discovered issue that belongs to Phase 2B or Phase 2C.
+
+MOST IMPORTANT:
+
+PRESERVE THE EXISTING SENTINELFORGE PROJECT.
+
+INSPECT FIRST.
+MAKE THE SMALLEST SAFE CHANGE.
+TEST EVERYTHING.
+DO NOT REWRITE THE PROJECT.

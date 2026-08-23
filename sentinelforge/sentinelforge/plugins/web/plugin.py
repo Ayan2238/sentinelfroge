@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import ssl
 
 from sentinelforge.modules.base import Severity
+from sentinelforge.core.network import open_url, ssl_context
 from sentinelforge.plugins.base import BasePlugin, PluginResult
 
 if TYPE_CHECKING:
@@ -52,13 +53,12 @@ class WebPlugin(BasePlugin):
         timeout = self._cfg("general.timeout", 10)
         ua = self._cfg("general.user_agent", "SentinelForge/2.0")
 
-        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(base_url)
         req.add_header("User-Agent", ua)
         ctx = ssl_context(self._config)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+            with open_url(req, self._config, timeout=timeout, context=ctx) as resp:
                 headers = dict(resp.headers)
                 body = resp.read(100_000).decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
@@ -123,12 +123,11 @@ class WebPlugin(BasePlugin):
 
     @staticmethod
     def _fetch_raw(url: str, ua: str, timeout: int, config) -> tuple[int, dict, str]:
-        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(url)
         req.add_header("User-Agent", ua)
         ctx = ssl_context(config)
         try:
-            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
+            with open_url(req, config, timeout=timeout, context=ctx) as resp:
                 return resp.status, dict(resp.headers), resp.read(10_000).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             return exc.code, dict(exc.headers), ""

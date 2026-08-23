@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TYPE_CHECKING
 
+from sentinelforge.core.security import redact_value
+
 if TYPE_CHECKING:
     from sentinelforge.core.config import ConfigManager
     from sentinelforge.core.target import Target
@@ -76,7 +78,7 @@ class Finding:
     raw_data: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return redact_value({
             "module": self.module,
             "title": self.title,
             "severity": self.severity.value,
@@ -89,7 +91,7 @@ class Finding:
             "cve": self.cve,
             "cvss": self.cvss,
             "tags": self.tags,
-        }
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +128,14 @@ class ModuleResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return redact_value({
             "module_name": self.module_name,
             "status": self.status,
             "elapsed": round(self.elapsed, 3),
             "findings": [f.to_dict() for f in self.findings],
             "error": self.error,
             "metadata": self.metadata,
-        }
+        })
 
     def add_finding(self, finding: Finding) -> None:
         self.findings.append(finding)

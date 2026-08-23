@@ -15,6 +15,8 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any
 
+from sentinelforge.core.security import redact_text, redact_value
+
 # ---------------------------------------------------------------------------
 # Custom severity levels
 # ---------------------------------------------------------------------------
@@ -69,10 +71,10 @@ class SentinelFormatter(logging.Formatter):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
         module = record.name.split(".")[-1][:12].ljust(12)
         level = record.levelname.ljust(self._WIDTH)
-        msg = record.getMessage()
+        msg = redact_text(record.getMessage())
 
         if record.exc_info:
-            msg += "\n" + self.formatException(record.exc_info)
+            msg += "\n" + redact_text(self.formatException(record.exc_info))
 
         coloured_level = _colourise(record.levelname, level)
         return f"[{ts}] [{module}] [{coloured_level}] {msg}"
@@ -159,8 +161,9 @@ class SentinelLogger:
     def _fmt(msg: str, ctx: dict[str, Any]) -> str:
         if not ctx:
             return msg
-        kv = " ".join(f"{k}={v!r}" for k, v in ctx.items())
-        return f"{msg}  {kv}"
+        safe_ctx = redact_value(ctx)
+        kv = " ".join(f"{k}={v!r}" for k, v in safe_ctx.items())
+        return redact_text(f"{msg}  {kv}")
 
     def _add_console_handler(self) -> None:
         handler = logging.StreamHandler(sys.stdout)
