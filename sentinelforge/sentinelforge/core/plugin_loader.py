@@ -9,8 +9,10 @@ Plugins are lightweight wrappers around specific scanning capabilities
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import inspect
 import pkgutil
+from pathlib import Path
 from typing import TYPE_CHECKING, Type
 
 if TYPE_CHECKING:
@@ -55,8 +57,11 @@ class PluginLoader:
     def discover(self) -> None:
         """Scan built-in and extra packages and register valid plugins."""
         self._discover_package(self._BUILTIN_PACKAGE)
-        for pkg in self._extra_paths:
-            self._discover_package(pkg)
+        for path_or_package in self._extra_paths:
+            if Path(path_or_package).is_dir():
+                self._discover_directory(Path(path_or_package))
+            else:
+                self._discover_package(path_or_package)
 
     def get(self, name: str) -> Type["BasePlugin"]:
         if name not in self._registry:
@@ -129,6 +134,28 @@ class PluginLoader:
                 if self._is_valid_plugin(obj):
                     plugin_name = getattr(obj, "name", obj.__name__.lower())
                     self._registry[plugin_name] = obj
+
+    def _discover_directory(self, directory: Path) -> None:
+        """Load plugin Python files from a configured filesystem directory."""
+        for path in sorted(directory.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            module_name = f"_sentinelforge_custom_plugin_{path.stem}"
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, path)
+                if spec is None or spec.loader is None:
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            except (ImportError, OSError, SyntaxError):
+                continue
+            self._register_module(module)
+
+    def _register_module(self, mod: object) -> None:
+        for _, obj in inspect.getmembers(mod, inspect.isclass):
+            if self._is_valid_plugin(obj):
+                plugin_name = getattr(obj, "name", obj.__name__.lower())
+                self._registry[plugin_name] = obj
 
     @staticmethod
     def _is_valid_plugin(cls: type) -> bool:

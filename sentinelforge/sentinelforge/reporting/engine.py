@@ -24,9 +24,9 @@ class ReportEngine:
     ----------
     output_dir:
         Base directory for report output files.
-    formats:
+        formats:
         List of format names to generate (``"html"``, ``"json"``,
-        ``"markdown"``, ``"csv"``).
+        ``"markdown"``, ``"csv"``, ``"pdf"``).
     """
 
     def __init__(
@@ -98,7 +98,7 @@ class ReportEngine:
 
     def _get_formatter(self, fmt: str):  # type: ignore[return]
         from sentinelforge.reporting.formatters import html as html_fmt
-        from sentinelforge.reporting.formatters import json_fmt, markdown_fmt, csv_fmt
+        from sentinelforge.reporting.formatters import json_fmt, markdown_fmt, csv_fmt, pdf
 
         return {
             "html":     html_fmt.render,
@@ -106,6 +106,7 @@ class ReportEngine:
             "markdown": markdown_fmt.render,
             "md":       markdown_fmt.render,
             "csv":      csv_fmt.render,
+            "pdf":      pdf.render,
         }.get(fmt)
 
     @staticmethod

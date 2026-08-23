@@ -159,3 +159,13 @@ class TestReportEngine:
         )
         paths = engine.generate(correlated, session)
         assert len(paths) == 4
+
+    def test_pdf_report_generated(
+        self, correlated: CorrelatedReport, session: Session, tmp_path: Path
+    ) -> None:
+        engine = ReportEngine(output_dir=tmp_path, formats=["pdf"])
+        paths = engine.generate(correlated, session)
+        assert "pdf" in paths
+        content = paths["pdf"].read_bytes()
+        assert content.startswith(b"%PDF-1.4")
+        assert b"%%EOF" in content

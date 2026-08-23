@@ -1,0 +1,235 @@
+SENTINELFORGE — PHASE 1: COMPLETE MISSING & BROKEN FUNCTIONALITY
+
+You are working on the existing SentinelForge codebase.
+
+IMPORTANT:
+Do NOT rebuild, redesign, or rewrite the whole project.
+Do NOT replace the existing architecture.
+Do NOT remove working functionality.
+Do NOT perform broad refactoring unless it is directly required to fix one of the Phase 1 issues below.
+
+Your job is ONLY to complete and repair the remaining Phase 1 functionality identified in the latest audit.
+
+==================================================
+PHASE 1 OBJECTIVE
+==================================================
+
+Make SentinelForge's existing core functionality genuinely functional by fixing incomplete, fake, broken, or disconnected implementations.
+
+==================================================
+TASKS
+==================================================
+
+1. FIX PLUGIN ENABLE/DISABLE
+--------------------------------------------------
+Current issue:
+`sf plugin enable` / `sf plugin disable` can report success without actually changing plugin configuration.
+
+Requirements:
+- Find the existing plugin management implementation.
+- Preserve its current architecture and configuration system.
+- Make enable actually persist the enabled state.
+- Make disable actually persist the disabled state.
+- Ensure the scanner respects that state.
+- Return accurate success/error messages.
+- Handle unknown plugin names safely.
+- Do not create a second plugin/configuration system.
+
+Verify with actual CLI behavior.
+
+2. FIX RESUME WORKFLOW
+--------------------------------------------------
+Current issue:
+The resume workflow is likely broken.
+
+Requirements:
+- Trace the existing scan/job state and resume implementation.
+- Identify why resume fails.
+- Fix it using the existing architecture.
+- Preserve existing scan state/data formats where possible.
+- Ensure an interrupted/paused scan can actually resume from the appropriate saved state.
+- Handle missing, corrupted, or incompatible state gracefully.
+- Do not redesign the entire scan engine.
+
+Add tests covering:
+- normal resume
+- missing state
+- invalid state
+- already-completed scan/state
+
+3. FIX CUSTOM PLUGIN DIRECTORY SUPPORT
+--------------------------------------------------
+Current issue:
+Custom plugin directory configuration exists but is not properly connected.
+
+Requirements:
+- Locate the existing configuration option.
+- Connect it to the existing plugin discovery/loading system.
+- Support configured custom plugin directories without breaking built-in plugins.
+- Validate paths appropriately.
+- Handle nonexistent/inaccessible directories gracefully.
+- Avoid arbitrary code changes outside the plugin-loading path.
+
+Add a test proving a plugin from a configured custom directory can actually be discovered/loaded.
+
+4. IMPLEMENT PDF REPORTING
+--------------------------------------------------
+Current issue:
+PDF is accepted as a configured/report format but no actual formatter exists.
+
+Requirements:
+- Inspect the existing reporting architecture and formatters first.
+- Implement PDF as an additional formatter following the existing formatter interface/pattern.
+- Reuse existing normalized scan/report data.
+- Do NOT redesign reporting.
+- Do NOT duplicate report-generation logic unnecessarily.
+- If a suitable existing PDF dependency already exists, use it.
+- Only add a dependency if genuinely required.
+- Ensure PDF generation fails gracefully with a useful error if the required dependency/environment is unavailable.
+
+Test that:
+- PDF output can be generated from representative scan results.
+- Existing JSON/CSV/other report formats still work unchanged.
+
+5. FIX TLS VERIFICATION CONFIGURATION
+--------------------------------------------------
+Current issue:
+TLS verification configuration needs to be properly connected.
+
+Requirements:
+- Find the existing TLS verification setting/configuration.
+- Ensure network components that are supposed to honor it actually do so.
+- Preserve secure verification as the default.
+- Do NOT globally disable TLS verification.
+- Do NOT weaken certificate validation by default.
+- Make sure the configuration affects only the intended requests/components.
+
+Add tests for:
+- verification enabled/default
+- explicitly configured verification behavior
+
+6. VERIFY EXISTING SCANNER MODULES
+--------------------------------------------------
+Audit the existing scanner implementation for Phase 1 only.
+
+Check that existing modules:
+- load correctly
+- execute correctly
+- return expected result structures
+- integrate with the existing pipeline
+- respect plugin enable/disable state
+- handle network failures without crashing the whole scanner
+
+Do NOT add new major scanner capabilities in this phase.
+
+7. REMOVE ONLY DEAD/BROKEN CODE DIRECTLY RELATED TO PHASE 1
+--------------------------------------------------
+After implementing the fixes:
+- Remove obsolete code made unnecessary by these fixes.
+- Remove unreachable duplicate logic only when clearly identified.
+- Do NOT perform a general cleanup/rewrite.
+- Do NOT remove code merely because it looks unused unless you can establish that it is genuinely dead and related to Phase 1.
+
+8. ERROR HANDLING
+--------------------------------------------------
+For all Phase 1 fixes:
+- Replace silent failures with meaningful errors where appropriate.
+- Do not swallow exceptions unnecessarily.
+- Do not expose secrets in errors/logs.
+- Preserve the project's existing error-handling conventions.
+
+9. TESTING
+--------------------------------------------------
+Add or update focused tests for every Phase 1 change.
+
+At minimum verify:
+- plugin enable
+- plugin disable
+- plugin state persistence
+- custom plugin discovery
+- resume workflow
+- PDF report generation
+- TLS configuration
+- scanner behavior after plugin changes
+- existing report formats remain functional
+
+Run the project's existing test suite after the targeted tests.
+
+Also run the project's existing lint/format/static checks where already configured.
+
+==================================================
+STRICT PRESERVATION RULES
+==================================================
+
+DO NOT:
+- rewrite SentinelForge from scratch
+- replace the architecture
+- replace the scanner engine
+- replace the plugin architecture
+- replace the reporting architecture
+- replace configuration management
+- remove working features
+- add unnecessary frameworks
+- add unnecessary dependencies
+- implement Phase 2 or Phase 3 work
+- implement Shodan or Neo4j in this phase
+- add AI functionality
+- add a dashboard/API
+- add Rust acceleration
+- expand WAF/JavaScript/sitemap/API discovery
+- change unrelated modules
+
+ONLY make changes required to complete Phase 1.
+
+Before changing anything:
+1. Inspect the existing implementation.
+2. Trace how the relevant feature currently works.
+3. Identify the smallest safe change.
+4. Implement it within the existing architecture.
+5. Test it.
+6. Check for regressions.
+
+==================================================
+PHASE 1 COMPLETION CRITERIA
+==================================================
+
+Phase 1 is complete only when:
+
+[ ] `sf plugin enable` actually enables a plugin.
+[ ] `sf plugin disable` actually disables a plugin.
+[ ] Plugin state persists correctly.
+[ ] Scanner respects plugin state.
+[ ] Resume workflow works.
+[ ] Custom plugin directories actually work.
+[ ] PDF reporting actually generates PDFs.
+[ ] Existing report formats still work.
+[ ] TLS verification configuration works correctly and securely.
+[ ] Existing scanner modules execute without Phase-1-related failures.
+[ ] Focused tests pass.
+[ ] Existing test suite passes.
+[ ] Existing lint/format/static checks pass where configured.
+[ ] No unrelated architecture has been rewritten.
+[ ] No working functionality has been intentionally removed.
+
+==================================================
+FINAL RESPONSE REQUIREMENT
+==================================================
+
+When finished, DO NOT just say "done".
+
+Report:
+1. Files changed.
+2. What was changed in each file.
+3. Tests added/modified.
+4. Commands/tests actually executed.
+5. Test results.
+6. Any remaining Phase 1 issue.
+7. Any issue that belongs to Phase 2 or Phase 3 instead.
+
+If a requirement cannot be safely implemented because the existing codebase lacks something necessary, STOP and clearly explain the blocker instead of inventing a replacement architecture.
+
+The priority is:
+
+PRESERVE → INSPECT → MINIMAL CHANGE → IMPLEMENT → TEST → VERIFY.
+
+Do not destroy or unnecessarily rewrite SentinelForge.

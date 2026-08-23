@@ -188,9 +188,9 @@ class SslPlugin(BasePlugin):
         for proto_name, min_version in [("TLS 1.0", ssl.TLSVersion.TLSv1),
                                          ("TLS 1.1", ssl.TLSVersion.TLSv1_1)]:
             try:
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                from sentinelforge.core.network import ssl_context
+                ctx = ssl_context(self._config)
                 ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
                 ctx.minimum_version = min_version
                 ctx.maximum_version = min_version
                 with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -241,9 +241,8 @@ class SslPlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     def _fetch_cert(self, host: str, port: int, timeout: int) -> dict | None:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        from sentinelforge.core.network import ssl_context
+        ctx = ssl_context(self._config)
         try:
             with socket.create_connection((host, port), timeout=timeout) as sock:
                 with ctx.wrap_socket(sock, server_hostname=host) as ssock:

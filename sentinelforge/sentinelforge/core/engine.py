@@ -85,6 +85,7 @@ class SentinelEngine:
         self._plugin_loader = PluginLoader(
             enabled=self._config.get("plugins.enabled"),
             disabled=self._config.get("plugins.disabled", []),
+            extra_paths=self._plugin_paths(),
         )
         self._scheduler = Scheduler(
             max_workers=self._config.get("general.max_threads", 10),
@@ -144,6 +145,7 @@ class SentinelEngine:
         # ── Session ───────────────────────────────────────────────────────
         if resume_session_id:
             session = self._resume_session(resume_session_id)
+            targets = session.targets
         else:
             session = self._session_mgr.create(
                 targets=targets,
@@ -165,9 +167,9 @@ class SentinelEngine:
                 findings = self._scan_target(target, session)
                 all_findings.extend(findings)
 
-            # Persist all findings into the session
-            for f in all_findings:
-                session.add_finding(f.to_dict())
+            # Module and plugin execution persists findings as each target is
+            # completed, which also makes them available to post-exploit
+            # analysis on the next target.
             self._session_mgr.save(session)
 
             # ── Correlation ───────────────────────────────────────────────
@@ -252,12 +254,15 @@ class SentinelEngine:
         """Run all active modules and plugins against a single target."""
         self._log.info("Scanning target", target=str(target), kind=target.kind.value)
         findings: list[Finding] = []
+        regular_findings: list[Finding] = []
 
         # ── Modules ───────────────────────────────────────────────────────
         module_instances = self._module_loader.instantiate_all(self._config)
+        regular_modules = [m for m in module_instances if m.name != "post_exploit"]
+        analysis_modules = [m for m in module_instances if m.name == "post_exploit"]
         module_tasks = [
             (f"module:{m.name}", m.execute, (target, session), {})
-            for m in module_instances
+            for m in regular_modules
         ]
         module_results = self._scheduler.run(
             module_tasks,
@@ -269,6 +274,25 @@ class SentinelEngine:
             ),
         )
         for task_result in module_results:
+            if task_result.success and task_result.result:
+                findings.extend(task_result.result.findings)
+                regular_findings.extend(task_result.result.findings)
+                for finding in task_result.result.findings:
+                    session.add_finding(finding.to_dict())
+            elif not task_result.success:
+                self._log.warning(
+                    "Module execution failed", name=task_result.name, error=task_result.error
+                )
+
+        # Post-exploitation analysis consumes findings from the preceding
+        # modules, so it runs after those results have been attached to the
+        # session rather than concurrently with them.
+        analysis_tasks = [
+            (f"module:{m.name}", m.execute, (target, session), {})
+            for m in analysis_modules
+        ]
+        analysis_results = self._scheduler.run(analysis_tasks)
+        for task_result in analysis_results:
             if task_result.success and task_result.result:
                 findings.extend(task_result.result.findings)
             elif not task_result.success:
@@ -298,6 +322,9 @@ class SentinelEngine:
                     "Plugin execution failed", name=task_result.name, error=task_result.error
                 )
 
+        for finding in findings[len(regular_findings):]:
+            session.add_finding(finding.to_dict())
+
         self._log.info(
             "Target scan complete",
             target=str(target),
@@ -308,11 +335,31 @@ class SentinelEngine:
     def _resume_session(self, session_id: str) -> Session:
         try:
             session = self._session_mgr.load(session_id)
+            if session.status == SessionStatus.COMPLETED:
+                raise ScanError(f"Cannot resume completed session '{session_id}'.")
+            if session.status not in (
+                SessionStatus.PAUSED,
+                SessionStatus.RUNNING,
+                SessionStatus.FAILED,
+            ):
+                raise ScanError(
+                    f"Cannot resume session '{session_id}' from status "
+                    f"'{session.status.value}'."
+                )
             session.status = SessionStatus.RUNNING
             self._log.info("Resuming session", session=session.short_id)
             return session
         except FileNotFoundError as exc:
             raise ScanError(f"Cannot resume: session '{session_id}' not found.") from exc
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ScanError(f"Cannot resume: session '{session_id}' has invalid state.") from exc
+
+    def _plugin_paths(self) -> list[str]:
+        configured = self._config.get("plugins.plugin_dir")
+        if not configured:
+            return []
+        paths = configured if isinstance(configured, list) else [configured]
+        return [str(Path(path)) for path in paths if Path(path).is_dir()]
 
 
 # ---------------------------------------------------------------------------

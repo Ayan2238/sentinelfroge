@@ -56,7 +56,8 @@ class CloudPlugin(BasePlugin):
 
     def _fetch(self, url: str, timeout: int) -> tuple[int, str]:
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+            from sentinelforge.core.network import ssl_context
+            with urllib.request.urlopen(url, timeout=timeout, context=ssl_context(self._config)) as resp:  # noqa: S310
                 return resp.status, resp.read(20_000).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             return exc.code, ""

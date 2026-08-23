@@ -158,6 +158,38 @@ class ConfigManager:
             node = node.setdefault(part, {})
         node[parts[-1]] = value
 
+    def persist_plugin_state(
+        self, name: str, enabled: bool, path: str | Path | None = None
+    ) -> Path:
+        """Persist one plugin state in the user configuration file.
+
+        Only the plugin section is changed.  Project configuration remains
+        untouched, while the normal configuration precedence makes this
+        override effective for subsequent CLI invocations.
+        """
+        destination = Path(path) if path else self._USER_CONFIG
+        data = self._load_yaml(destination)
+        plugins = data.setdefault("plugins", {})
+        # Start from the effective configuration, not an empty user file.
+        # Otherwise the first CLI override would accidentally disable all
+        # built-in plugins not repeated in that file.
+        enabled_names = set(self.get("plugins.enabled") or [])
+        disabled_names = set(self.get("plugins.disabled") or [])
+        enabled_names.update(plugins.get("enabled") or [])
+        disabled_names.update(plugins.get("disabled") or [])
+        if enabled:
+            enabled_names.add(name)
+            disabled_names.discard(name)
+        else:
+            enabled_names.discard(name)
+            disabled_names.add(name)
+        plugins["enabled"] = sorted(enabled_names)
+        plugins["disabled"] = sorted(disabled_names)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, sort_keys=False)
+        return destination
+
     @property
     def data(self) -> dict[str, Any]:
         """Return a shallow copy of the full configuration dict."""
@@ -273,6 +305,8 @@ class ConfigManager:
                 raise ConfigError(
                     f"Unknown report format '{fmt}'. Valid: {valid_formats}."
                 )
+        if not isinstance(self.get("network.verify_ssl", True), bool):
+            raise ConfigError("network.verify_ssl must be true or false.")
 
     def _merge(self, override: dict[str, Any]) -> None:
         """Deep-merge *override* into ``self._data``."""

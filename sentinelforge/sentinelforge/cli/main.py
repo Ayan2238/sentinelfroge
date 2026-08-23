@@ -125,7 +125,7 @@ if _HAS_CLICK:
         "formats",
         multiple=True,
         default=["html", "json"],
-        type=click.Choice(["html", "json", "markdown", "csv"]),
+        type=click.Choice(["html", "json", "markdown", "csv", "pdf"]),
         help="Report output format(s). Repeat to enable multiple.",
     )
     @click.option("--config", "-c", default=None, type=click.Path(exists=True), help="Custom config YAML.")
@@ -198,7 +198,7 @@ if _HAS_CLICK:
     @click.option("--session", "-s", required=True, help="Session ID to generate report for.")
     @click.option("--output", "-o", default="output", type=click.Path(), help="Output directory.")
     @click.option("--format", "-f", "formats", multiple=True, default=["html"],
-                  type=click.Choice(["html", "json", "markdown", "csv"]))
+                  type=click.Choice(["html", "json", "markdown", "csv", "pdf"]))
     def report(session: str, output: str, formats: tuple[str, ...]) -> None:
         """Re-generate a report from an existing scan session."""
         try:
@@ -271,16 +271,41 @@ if _HAS_CLICK:
 
     @plugin.command("enable")
     @click.argument("name")
-    def plugin_enable(name: str) -> None:
+    @click.option("--config", "-c", default=None, type=click.Path(exists=True), help="Custom config YAML.")
+    def plugin_enable(name: str, config: Optional[str]) -> None:
         """Enable a plugin by name."""
-        _ok(f"Plugin '{name}' enabled (takes effect on next scan).")
-        _info("To persist, add it to 'plugins.enabled' in your config.yaml.")
+        from sentinelforge.core.config import ConfigManager
+        from sentinelforge.core.plugin_loader import PluginLoader, PluginLoadError
+        cfg = ConfigManager(config_path=config)
+        loader = PluginLoader(
+            enabled=cfg.get("plugins.enabled"),
+            disabled=cfg.get("plugins.disabled", []),
+            extra_paths=[cfg.get("plugins.plugin_dir")] if cfg.get("plugins.plugin_dir") else [],
+        )
+        loader.discover()
+        if name not in loader.list_all():
+            raise click.ClickException(f"Unknown plugin '{name}'. Available: {', '.join(loader.list_all())}")
+        cfg.persist_plugin_state(name, True, config)
+        _ok(f"Plugin '{name}' enabled and persisted.")
 
     @plugin.command("disable")
     @click.argument("name")
-    def plugin_disable(name: str) -> None:
+    @click.option("--config", "-c", default=None, type=click.Path(exists=True), help="Custom config YAML.")
+    def plugin_disable(name: str, config: Optional[str]) -> None:
         """Disable a plugin by name."""
-        _ok(f"Plugin '{name}' disabled (takes effect on next scan).")
+        from sentinelforge.core.config import ConfigManager
+        cfg = ConfigManager(config_path=config)
+        from sentinelforge.core.plugin_loader import PluginLoader
+        loader = PluginLoader(
+            enabled=cfg.get("plugins.enabled"),
+            disabled=cfg.get("plugins.disabled", []),
+            extra_paths=[cfg.get("plugins.plugin_dir")] if cfg.get("plugins.plugin_dir") else [],
+        )
+        loader.discover()
+        if name not in loader.list_all():
+            raise click.ClickException(f"Unknown plugin '{name}'. Available: {', '.join(loader.list_all())}")
+        cfg.persist_plugin_state(name, False, config)
+        _ok(f"Plugin '{name}' disabled and persisted.")
 
     # ── profile ───────────────────────────────────────────────────────────
 

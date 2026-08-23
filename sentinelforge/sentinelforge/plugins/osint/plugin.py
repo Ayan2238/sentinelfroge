@@ -59,12 +59,10 @@ class OsintPlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     def _fetch(self, url: str, ua: str, timeout: int) -> tuple[int, str]:
-        import ssl as _ssl
+        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(url)
         req.add_header("User-Agent", ua)
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
+        ctx = ssl_context(self._config)
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
                 return resp.status, resp.read(50_000).decode("utf-8", errors="replace")

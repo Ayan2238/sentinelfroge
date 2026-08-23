@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import urllib.request
 from typing import TYPE_CHECKING
+import ssl
 
 from sentinelforge.modules.base import Severity
 from sentinelforge.plugins.base import BasePlugin, PluginResult
@@ -51,12 +52,10 @@ class WebPlugin(BasePlugin):
         timeout = self._cfg("general.timeout", 10)
         ua = self._cfg("general.user_agent", "SentinelForge/2.0")
 
-        import ssl as _ssl
+        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(base_url)
         req.add_header("User-Agent", ua)
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
+        ctx = ssl_context(self._config)
 
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
@@ -97,7 +96,9 @@ class WebPlugin(BasePlugin):
 
         # Check for WordPress-specific risks
         if any(t == "WordPress" for t, _ in detected):
-            status, _, xmlrpc_body = self._fetch_raw(base_url + "/xmlrpc.php", ua, timeout)
+            status, _, xmlrpc_body = self._fetch_raw(
+                base_url + "/xmlrpc.php", ua, timeout, self._config
+            )
             if status == 200 and "XML-RPC server accepts" in xmlrpc_body:
                 result.add_finding(
                     self._finding(
@@ -121,13 +122,11 @@ class WebPlugin(BasePlugin):
         return result
 
     @staticmethod
-    def _fetch_raw(url: str, ua: str, timeout: int) -> tuple[int, dict, str]:
-        import ssl as _ssl
+    def _fetch_raw(url: str, ua: str, timeout: int, config) -> tuple[int, dict, str]:
+        from sentinelforge.core.network import ssl_context
         req = urllib.request.Request(url)
         req.add_header("User-Agent", ua)
-        ctx = _ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
+        ctx = ssl_context(config)
         try:
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:  # noqa: S310
                 return resp.status, dict(resp.headers), resp.read(10_000).decode("utf-8", errors="replace")
