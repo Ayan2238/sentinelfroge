@@ -1,4 +1,4 @@
-# 🛡️ SentinelForge v2.0.0
+# 🛡️ SentinelForge
 
 **Professional Security Assessment Framework**
 
@@ -8,7 +8,7 @@ SentinelForge is a modular, extensible penetration testing and security auditing
 
 ---
 
-## ✨ What's New in v2.0.0
+## ✨ Key Features
 
 - **Layered architecture** — Core Engine, Module Loader, Plugin Loader, Session Manager, Scheduler, Correlation Engine, Report Engine
 - **Standard module interface** — every module implements `initialize → validate → run → cleanup → report`

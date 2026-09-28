@@ -124,6 +124,6 @@ def render(data: dict[str, Any]) -> tuple[str, str]:
     lines.append(f"- **Modules Run:** {', '.join(stats.get('modules', []))}")
     lines.append("")
     lines.append("---")
-    lines.append("_SentinelForge v2.0 — For authorised security assessments only._")
+    lines.append("_SentinelForge — For authorised security assessments only._")
 
     return "\n".join(lines), "md"

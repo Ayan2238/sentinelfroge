@@ -202,7 +202,7 @@ tr:hover td{{background:#fafafa}}
   </div>
 
   <div class="footer">
-    SentinelForge v2.0 · Authorised security assessment only ·
+    SentinelForge · Authorised security assessment only ·
     Generated {data.get('generated_at','')[:19].replace('T',' ')} UTC
   </div>
 </div>
