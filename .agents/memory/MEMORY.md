@@ -1,1 +1,0 @@
-- [Plugin configuration persistence](plugin-configuration-persistence.md) — persist CLI plugin changes as overrides of the effective merged state, preserving built-in plugins.
