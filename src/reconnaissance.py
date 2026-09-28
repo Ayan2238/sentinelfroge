@@ -54,9 +54,9 @@ class ReconMaster:
         # Use Sublist3r for subdomain enumeration
         print("[+] Enumerating subdomains...")
         subdomains = subprocess.check_output(
-            f"sublist3r -d {domain} -o -", 
-            shell=True
-        ).decode().splitlines()
+            ["sublist3r", "-d", domain, "-o", "-"],
+            text=True,
+        ).splitlines()
         
         for sd in subdomains:
             tx.run("CREATE (s:Subdomain {name: $name})", name=sd)
