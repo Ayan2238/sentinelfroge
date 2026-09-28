@@ -18,7 +18,7 @@ SentinelForge is a modular, extensible penetration testing and security auditing
 - **Correlation engine** — de-duplicates findings, detects attack chains, computes risk score (0–100)
 - **Multi-format reports** — HTML, JSON, Markdown, CSV, PDF
 - **Professional CLI** — `sf scan / report / plugin / profile / history / resume / doctor`
-- **Zero hard-coded secrets** — all credentials via environment variables
+- **No hard-coded credentials** — optional credentials are supplied through configuration or environment variables
 
 ---
 
@@ -26,13 +26,16 @@ SentinelForge is a modular, extensible penetration testing and security auditing
 
 ```bash
 # Standard install (CLI + core)
-pip install sentinelforge
+# From the public repository
+git clone https://github.com/Ayan2238/sentinelfroge
+cd sentinelfroge/sentinelforge
+pip install -e .
 
 # With DNS checks
-pip install "sentinelforge[dns]"
+pip install -e ".[dns]"
 
 # With all optional DNS functionality
-pip install "sentinelforge[full]"
+pip install -e ".[full]"
 
 # Development install
 git clone https://github.com/Ayan2238/sentinelfroge
@@ -49,7 +52,7 @@ pip install -e ".[dev]"
 sf scan example.com
 
 # Deep scan with all report formats
-sf scan example.com --profile deep --format html json markdown csv pdf
+sf scan example.com --profile deep --format html --format json --format markdown --format csv --format pdf
 
 # Web-focused scan
 sf scan https://example.com/app --profile web
@@ -112,8 +115,8 @@ sf scan example.com --format pdf
 sf report --session <session-id> --format pdf
 ```
 
-The built-in formatter produces a compact, single-page PDF. Use HTML for
-longer reports or richer layout requirements.
+The built-in formatter produces a compact PDF. Use HTML for longer reports
+or richer layout requirements.
 
 ---
 
