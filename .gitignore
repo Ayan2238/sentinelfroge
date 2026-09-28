@@ -78,3 +78,8 @@ sentinelforge-v2*.zip
 *.tar
 *.tar.gz
 *.7z
+
+# Replit/AI development artifacts
+.agents/
+artifacts/
+.replit
