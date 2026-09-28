@@ -1,4 +1,4 @@
-# 🛡️ SentinelForge v2.0
+# 🛡️ SentinelForge v2.0.0
 
 **Professional Security Assessment Framework**
 
@@ -8,7 +8,7 @@ SentinelForge is a modular, extensible penetration testing and security auditing
 
 ---
 
-## ✨ What's New in v2.0
+## ✨ What's New in v2.0.0
 
 - **Layered architecture** — Core Engine, Module Loader, Plugin Loader, Session Manager, Scheduler, Correlation Engine, Report Engine
 - **Standard module interface** — every module implements `initialize → validate → run → cleanup → report`
@@ -16,7 +16,7 @@ SentinelForge is a modular, extensible penetration testing and security auditing
 - **Scan profiles** — `fast / normal / deep / stealth / web / network / cloud`
 - **Session management** — resume interrupted scans, full history
 - **Correlation engine** — de-duplicates findings, detects attack chains, computes risk score (0–100)
-- **Multi-format reports** — HTML, JSON, Markdown, CSV
+- **Multi-format reports** — HTML, JSON, Markdown, CSV, PDF
 - **Professional CLI** — `sf scan / report / plugin / profile / history / resume / doctor`
 - **Zero hard-coded secrets** — all credentials via environment variables
 
@@ -49,7 +49,7 @@ pip install -e ".[dev]"
 sf scan example.com
 
 # Deep scan with all report formats
-sf scan example.com --profile deep --format html json markdown csv
+sf scan example.com --profile deep --format html json markdown csv pdf
 
 # Web-focused scan
 sf scan https://example.com/app --profile web
@@ -75,7 +75,7 @@ sf resume <session-id>
 sf scan <targets…>       Run a security assessment
   --profile, -p          Scan profile (fast|normal|deep|stealth|web|network|cloud)
   --output, -o           Output directory (default: output/)
-  --format, -f           Report format(s): html json markdown csv
+  --format, -f           Report format(s): html json markdown csv pdf
   --config, -c           Custom config YAML file
   --verbose, -v          Debug logging
   --quiet, -q            Errors only
@@ -96,6 +96,24 @@ sf doctor                Check environment and dependencies
 sf version               Show version
 sf update                Check for updates
 ```
+
+---
+
+## 📄 PDF Reports
+
+PDF reports are built into the reporting engine and require no additional
+Python dependency. Select `pdf` with `sf scan` or `sf report`:
+
+```bash
+# Generate a PDF during a scan
+sf scan example.com --format pdf
+
+# Export a PDF from a completed session
+sf report --session <session-id> --format pdf
+```
+
+The built-in formatter produces a compact, single-page PDF. Use HTML for
+longer reports or richer layout requirements.
 
 ---
 
@@ -130,7 +148,7 @@ sentinelforge/
 │   └── engine.py          ← De-duplication, attack chains, risk scoring
 ├── reporting/
 │   ├── engine.py          ← Coordinates formatters, writes to disk
-│   └── formatters/        ← HTML, JSON, Markdown, CSV
+│   └── formatters/        ← HTML, JSON, Markdown, CSV, PDF
 ├── logging/
 │   └── logger.py          ← Structured, coloured, session-scoped logging
 └── cli/

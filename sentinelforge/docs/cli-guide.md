@@ -25,7 +25,7 @@ sf scan [OPTIONS] TARGETS...
 |------|-------|-------------|
 | `--profile` | `-p` | Scan profile: `fast` `normal` `deep` `stealth` `web` `network` `cloud` |
 | `--output` | `-o` | Output directory (default: `output/`) |
-| `--format` | `-f` | One or more report formats: `html` `json` `markdown` `csv` |
+| `--format` | `-f` | One or more report formats: `html` `json` `markdown` `csv` `pdf` |
 | `--config` | `-c` | Custom config YAML file |
 | `--verbose` | `-v` | Enable debug logging |
 | `--quiet` | `-q` | Errors only |
@@ -41,7 +41,7 @@ sf scan [OPTIONS] TARGETS...
 sf scan example.com
 
 # Deep scan, all formats
-sf scan example.com -p deep -f html json markdown csv
+sf scan example.com -p deep -f html json markdown csv pdf
 
 # Web app with proxy
 SF_PROXY=http://127.0.0.1:8080 sf scan https://example.com/app -p web
@@ -80,8 +80,12 @@ sf report [OPTIONS]
 **Example:**
 
 ```bash
-sf report -s a1b2c3d4 -f html json
+sf report -s a1b2c3d4 -f html json pdf
 ```
+
+PDF output is built in and does not require an additional Python dependency.
+The built-in PDF formatter is compact and single-page; use HTML for longer or
+more richly formatted reports.
 
 ---
 
