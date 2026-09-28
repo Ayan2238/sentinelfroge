@@ -5,6 +5,8 @@ import ssl
 import urllib.error
 import urllib.request
 
+import pytest
+
 from sentinelforge.core.config import ConfigManager
 from sentinelforge.core.network import open_url, ssl_context
 
