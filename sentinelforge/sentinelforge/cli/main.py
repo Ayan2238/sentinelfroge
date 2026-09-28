@@ -49,7 +49,7 @@ _BANNER = r"""
                                                       |___/
 """
 
-_VERSION = "2.0.0"
+_VERSION = "1.0.0"
 
 
 def _print_banner() -> None:

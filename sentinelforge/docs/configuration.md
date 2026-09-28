@@ -17,7 +17,7 @@ general:
   log_level: INFO          # DEBUG|INFO|WARNING|ERROR|CRITICAL
   max_threads: 10          # concurrent workers
   timeout: 30              # seconds per request
-  user_agent: "SentinelForge/2.0"
+  user_agent: "SentinelForge/1.0"
 
 network:
   proxy: null              # http://127.0.0.1:8080

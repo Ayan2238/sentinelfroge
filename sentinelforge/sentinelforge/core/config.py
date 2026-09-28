@@ -19,14 +19,14 @@ import yaml
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONFIG: dict[str, Any] = {
-    "version": "2.0.0",
+    "version": "1.0.0",
     "general": {
         "output_dir": "output",
         "log_level": "INFO",
         "max_threads": 10,
         "timeout": 30,
         "retries": 3,
-        "user_agent": "SentinelForge/2.0 (Security Scanner)",
+        "user_agent": "SentinelForge/1.0 (Security Scanner)",
     },
     "network": {
         "proxy": None,

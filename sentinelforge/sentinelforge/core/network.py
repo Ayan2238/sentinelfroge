@@ -42,11 +42,35 @@ def open_url(
     retries = int(config.get("general.retries", 0)) if retryable else 0
     timeout = timeout or float(config.get("general.timeout", 30))
     context = context or ssl_context(config)
+
+    follow_redirects = bool(config.get("scanning.follow_redirects", True))
+    max_redirects = int(config.get("scanning.max_redirects", 10))
+
+    class _RedirectHandler(urllib.request.HTTPRedirectHandler):
+        def __init__(self):
+            super().__init__()
+            self.max_redirections = max_redirects
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            if not follow_redirects:
+                return None
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    opener = None
+    if not follow_redirects or max_redirects != 10:
+        opener = urllib.request.build_opener(
+            _RedirectHandler(),
+            urllib.request.HTTPSHandler(context=context),
+        )
+
     for attempt in range(retries + 1):
         try:
-            response = urllib.request.urlopen(  # noqa: S310
-                request, timeout=timeout, context=context
-            )
+            if opener is None:
+                response = urllib.request.urlopen(
+                    request, timeout=timeout, context=context
+                )
+            else:
+                response = opener.open(request, timeout=timeout)
             try:
                 yield response
             finally:

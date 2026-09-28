@@ -51,7 +51,7 @@ class WebPlugin(BasePlugin):
         result = PluginResult(plugin_name=self.name)
         base_url = target.base_url
         timeout = self._cfg("general.timeout", 10)
-        ua = self._cfg("general.user_agent", "SentinelForge/2.0")
+        ua = self._cfg("general.user_agent", "SentinelForge/1.0")
 
         req = urllib.request.Request(base_url)
         req.add_header("User-Agent", ua)

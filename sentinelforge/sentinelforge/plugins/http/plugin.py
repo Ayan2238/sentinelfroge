@@ -42,7 +42,7 @@ class HttpPlugin(BasePlugin):
         result = PluginResult(plugin_name=self.name)
         base_url = target.base_url
         timeout = self._cfg("general.timeout", 10)
-        ua = self._cfg("general.user_agent", "SentinelForge/2.0")
+        ua = self._cfg("general.user_agent", "SentinelForge/1.0")
 
         for check_fn in [
             self._check_https_redirect,

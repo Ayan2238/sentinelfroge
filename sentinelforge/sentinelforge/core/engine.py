@@ -56,7 +56,7 @@ class SentinelEngine:
         Suppress all output except errors.
     """
 
-    VERSION = "2.0.0"
+    VERSION = "1.0.0"
 
     def __init__(
         self,

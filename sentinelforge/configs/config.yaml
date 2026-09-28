@@ -3,7 +3,7 @@
 # This file is the base configuration. Override any value here.
 # Environment variables (SF_*) take highest priority.
 
-version: "2.0.0"
+version: "1.0.0"
 
 # ─────────────────────────────────────────────────────────────────
 # General settings
@@ -14,7 +14,7 @@ general:
   max_threads: 10
   timeout: 30              # seconds per request / connection
   retries: 3
-  user_agent: "SentinelForge/2.0 (Security Scanner; +https://github.com/sentinelforge)"
+  user_agent: "SentinelForge/1.0 (Security Scanner; +https://github.com/sentinelforge)"
 
 # ─────────────────────────────────────────────────────────────────
 # Network settings

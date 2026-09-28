@@ -63,3 +63,70 @@ def test_open_url_does_not_retry_non_idempotent_request(monkeypatch) -> None:
         with open_url(request, config, retryable=False):
             pass
     assert calls["count"] == 1
+
+def test_open_url_honors_follow_redirects_setting(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def close(self):
+            pass
+
+    class FakeOpener:
+        def open(self, *args, **kwargs):
+            return Response()
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        fake_build_opener,
+    )
+
+    config = ConfigManager()
+    config.set("scanning.follow_redirects", False)
+
+    with open_url("https://example.com", config):
+        pass
+
+    handler = captured["handlers"][0]
+    assert handler.redirect_request(
+        None, None, 302, "Found", {}, "https://example.org"
+    ) is None
+
+
+def test_open_url_honors_max_redirects_setting(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def close(self):
+            pass
+
+    class FakeOpener:
+        def open(self, *args, **kwargs):
+            return Response()
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return FakeOpener()
+
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        fake_build_opener,
+    )
+
+    config = ConfigManager()
+    config.set("scanning.max_redirects", 3)
+
+    with open_url("https://example.com", config):
+        pass
+
+    handler = captured["handlers"][0]
+    assert handler.max_redirections == 3
