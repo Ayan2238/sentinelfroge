@@ -7,13 +7,22 @@ import subprocess
 class ReconMaster:
     def __init__(self):
         # Initialize Neo4j driver for attack surface visualization
+        neo4j_uri = os.getenv("SF_NEO4J_URI", "bolt://localhost:7687")
+        neo4j_user = os.getenv("SF_NEO4J_USER", "neo4j")
+        neo4j_password = os.getenv("SF_NEO4J_PASSWORD")
+        if not neo4j_password:
+            raise RuntimeError("SF_NEO4J_PASSWORD must be set before using Neo4j integration")
+
         self.neo4j_driver = GraphDatabase.driver(
-            "bolt://localhost:7687",
-            auth=("neo4j", "Y9ITKFXGUwXkVkLWUs0ABpomDtQZ8SN5SOL7yqA5tMU")  # Replace with your Neo4j credentials
+            neo4j_uri,
+            auth=(neo4j_user, neo4j_password)
         )
         
         # Initialize Shodan API
-        self.shodan_api = shodan.Shodan(os.getenv("XcSqdrwtrqcq99MGV8qsCNEPrXbLJR7j"))
+        shodan_api_key = os.getenv("SF_SHODAN_API_KEY")
+        if not shodan_api_key:
+            raise RuntimeError("SF_SHODAN_API_KEY must be set before using Shodan integration")
+        self.shodan_api = shodan.Shodan(shodan_api_key)
     
     def map_attack_surface(self, domain):
         """Generate interactive attack graph for the target domain"""

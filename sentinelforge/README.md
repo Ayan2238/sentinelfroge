@@ -35,8 +35,8 @@ pip install "sentinelforge[dns]"
 pip install "sentinelforge[full]"
 
 # Development install
-git clone https://github.com/sentinelforge/sentinelforge
-cd sentinelforge
+git clone https://github.com/Ayan2238/sentinelfroge
+cd sentinelfroge/sentinelforge
 pip install -e ".[dev]"
 ```
 

@@ -47,3 +47,34 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Python and local development
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Local output and logs
+output/
+logs/
+*.log
+
+# Private uploads and exported snapshots
+/Documents/
+/attached_assets/
+sentinelforge-v2*.zip
+*.tar
+*.tar.gz
+*.7z

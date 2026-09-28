@@ -47,9 +47,9 @@ sf = "sentinelforge.cli.main:main"
 sentinelforge = "sentinelforge.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/sentinelforge/sentinelforge"
-Documentation = "https://sentinelforge.readthedocs.io"
-Issues = "https://github.com/sentinelforge/sentinelforge/issues"
+Homepage = "https://github.com/Ayan2238/sentinelfroge"
+Documentation = "https://github.com/Ayan2238/sentinelfroge/tree/main/sentinelforge/docs"
+Issues = "https://github.com/Ayan2238/sentinelfroge/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
