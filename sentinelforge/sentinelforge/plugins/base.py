@@ -27,7 +27,7 @@ class PluginResult:
     """Structured result returned by every plugin."""
 
     plugin_name: str
-    status: str = "success"   # success | partial | failed | skipped
+    status: str = "success"   # success | partial | failed | skipped | unavailable
     elapsed: float = 0.0
     findings: list[Finding] = field(default_factory=list)
     error: str | None = None
