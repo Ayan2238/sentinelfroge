@@ -79,3 +79,4 @@ integrations:
     uri: "bolt://localhost:7687"
     user: neo4j
     password: null         # Override via SF_NEO4J_PASSWORD env var
+    database: neo4j

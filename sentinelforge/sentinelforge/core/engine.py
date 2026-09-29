@@ -30,6 +30,7 @@ from sentinelforge.core.session import Session, SessionManager, SessionStatus
 from sentinelforge.core.target import Target, TargetManager
 from sentinelforge.correlation.engine import CorrelationEngine, CorrelatedReport
 from sentinelforge.logging.logger import SentinelLogger, configure_logging
+from sentinelforge.integrations.neo4j import Neo4jIntegration
 from sentinelforge.modules.base import Finding
 from sentinelforge.reporting.engine import ReportEngine
 
@@ -97,6 +98,7 @@ class SentinelEngine:
             output_dir=self._output_dir / "reports",
             formats=self._config.get("reporting.formats", ["html", "json"]),
         )
+        self._neo4j = Neo4jIntegration(self._config, logger=self._log)
 
         # Discover all modules and plugins
         self._module_loader.discover()
@@ -179,6 +181,7 @@ class SentinelEngine:
             # ── Reporting ─────────────────────────────────────────────────
             session.complete()
             self._session_mgr.save(session)
+            self._neo4j.persist_session(session)
 
             report_paths = self._report_engine.generate(
                 report=correlated,

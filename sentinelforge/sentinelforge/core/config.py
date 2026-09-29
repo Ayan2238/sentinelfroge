@@ -60,6 +60,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
             "uri": "bolt://localhost:7687",
             "user": "neo4j",
             "password": None,
+            "database": "neo4j",
         },
     },
 }
@@ -276,6 +277,7 @@ class ConfigManager:
             "SF_NEO4J_URI": "integrations.neo4j.uri",
             "SF_NEO4J_USER": "integrations.neo4j.user",
             "SF_NEO4J_PASSWORD": "integrations.neo4j.password",
+            "SF_NEO4J_DATABASE": "integrations.neo4j.database",
             "SF_PROFILE": "scanning.profile",
         }
         for env_key, config_key in mapping.items():
