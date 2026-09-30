@@ -7,6 +7,13 @@ scanning:
   profile: network
   max_depth: 1
   scope: cidr
+  ports:
+    mode: common
+    ports: []
+    ranges: []
+    top: null
+    max_workers: 100
+    timeout: 2
 
 plugins:
   enabled:

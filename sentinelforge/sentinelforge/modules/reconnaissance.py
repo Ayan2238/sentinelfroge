@@ -18,6 +18,7 @@ from urllib.error import URLError
 
 from sentinelforge.modules.base import BaseModule, Finding, ModuleResult, Severity
 from sentinelforge.core.network import open_url
+from sentinelforge.core.port_discovery import PortDiscovery, PortDiscoveryConfig
 
 if TYPE_CHECKING:
     from sentinelforge.core.config import ConfigManager
@@ -37,10 +38,6 @@ class ReconModule(BaseModule):
     name = "reconnaissance"
     description = "Passive and active information gathering"
     category = "recon"
-
-    _COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445,
-                     993, 995, 1433, 3306, 3389, 5432, 5900, 6379,
-                     8080, 8443, 8888, 27017]
 
     def __init__(self, config: "ConfigManager") -> None:
         super().__init__(config)
@@ -169,66 +166,76 @@ class ReconModule(BaseModule):
         return []
 
     def _scan_ports(self, target: "Target") -> list[Finding]:
-        """Connect-scan common TCP ports."""
-        host = target.resolved_ips[0] if target.resolved_ips else target.host
-        open_ports: list[int] = []
-
-        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            futures = {
-                pool.submit(self._check_port, host, port): port
-                for port in self._COMMON_PORTS
-            }
-            for fut in as_completed(futures):
-                port = futures[fut]
-                try:
-                    if fut.result():
-                        open_ports.append(port)
-                except Exception:  # noqa: BLE001
-                    pass
-
-        open_ports.sort()
-        if not open_ports:
+        """Run centralized bounded TCP port discovery."""
+        addresses = list(target.resolved_ips)
+        if not addresses:
             return []
 
-        risky = [p for p in open_ports if p in (21, 23, 3389, 5900)]
-        severity = Severity.MEDIUM if risky else Severity.INFO
-        findings = [
-            self._finding(
-                title="Open TCP Ports Detected",
-                severity=severity,
-                target=target,
-                description=f"Found {len(open_ports)} open TCP port(s).",
-                evidence=[f"Port {p}/tcp open" for p in open_ports],
-                recommendation=(
-                    "Restrict open ports to only those required by the application. "
-                    "Legacy protocols (FTP, Telnet, RDP, VNC) should be disabled or replaced."
-                )
-                if risky
-                else "Review whether all open ports are intentional.",
-                tags=["recon", "ports"],
-                raw_data={"open_ports": open_ports, "risky_ports": risky},
-            )
+        config = PortDiscoveryConfig(
+            mode=self._cfg("scanning.ports.mode", "common"),
+            ports=tuple(self._cfg("scanning.ports.ports", []) or []),
+            ranges=tuple(
+                tuple(item)
+                for item in (self._cfg("scanning.ports.ranges", []) or [])
+            ),
+            top=self._cfg("scanning.ports.top", None),
+            max_workers=self._cfg("scanning.ports.max_workers", 100),
+            timeout=self._cfg("scanning.ports.timeout", 2),
+        )
+
+        discovery = PortDiscovery(config)
+        result = discovery.discover(target.host, addresses)
+
+        if not result.open_ports:
+            return []
+
+        observations = [
+            {
+                "address": observation.address,
+                "address_family": observation.address_family,
+                "port": observation.port,
+                "transport": observation.transport,
+                "state": observation.state,
+                "latency_ms": observation.latency_ms,
+                "timestamp": observation.timestamp,
+                "error": observation.error,
+            }
+            for observation in result.observations
+            if observation.state == "open"
         ]
 
-        if risky:
-            for port in risky:
-                service = {21: "FTP", 23: "Telnet", 3389: "RDP", 5900: "VNC"}.get(port, str(port))
-                findings.append(
-                    self._finding(
-                        title=f"Insecure Service Detected: {service} (port {port})",
-                        severity=Severity.HIGH,
-                        target=target,
-                        description=(
-                            f"{service} on port {port} transmits data in cleartext "
-                            "or has a history of critical vulnerabilities."
-                        ),
-                        evidence=[f"Port {port}/tcp open ({service})"],
-                        recommendation=f"Disable {service} or replace with a secure alternative (SSH, SFTP, HTTPS).",
-                        references=["https://attack.mitre.org/techniques/T1021/"],
-                        tags=["recon", "ports", "cleartext"],
+        return [
+            self._finding(
+                title="Open TCP Ports Detected",
+                severity=Severity.INFO,
+                target=target,
+                description=(
+                    f"Found {result.open_count} open TCP port observation(s) "
+                    f"across {len(addresses)} address(es)."
+                ),
+                evidence=[
+                    (
+                        f"{observation.address} "
+                        f"Port {observation.port}/tcp open "
+                        f"({observation.latency_ms:.3f} ms)"
                     )
-                )
-        return findings
+                    for observation in result.observations
+                    if observation.state == "open"
+                ],
+                recommendation="Review whether all open ports are intentional.",
+                tags=["recon", "ports"],
+                raw_data={
+                    "addresses": addresses,
+                    "ports_scanned": result.ports_scanned,
+                    "open_count": result.open_count,
+                    "closed_count": result.closed_count,
+                    "timeout_count": result.timeout_count,
+                    "error_count": result.error_count,
+                    "elapsed": result.elapsed,
+                    "observations": observations,
+                },
+            )
+        ]
 
     def _cert_transparency(self, target: "Target") -> list[Finding]:
         """Query crt.sh for certificate transparency records."""
@@ -388,11 +395,4 @@ class ReconModule(BaseModule):
             socket.getaddrinfo(host, None, socket.AF_INET)
             return True
         except (socket.gaierror, OSError):
-            return False
-
-    def _check_port(self, host: str, port: int) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=2):
-                return True
-        except (OSError, ConnectionRefusedError, TimeoutError):
             return False

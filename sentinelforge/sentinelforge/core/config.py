@@ -46,6 +46,14 @@ _DEFAULT_CONFIG: dict[str, Any] = {
         "follow_redirects": True,
         "max_redirects": 10,
         "scope": "domain",          # domain | subdomain | ip | cidr
+        "ports": {
+            "mode": "common",
+            "ports": [],
+            "ranges": [],
+            "top": None,
+            "max_workers": 100,
+            "timeout": 2,
+        },
     },
     "reporting": {
         "formats": ["html", "json"],
@@ -320,6 +328,75 @@ class ConfigManager:
             value = self.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= value <= maximum:
                 raise ConfigError(f"{key} must be between {minimum} and {maximum}.")
+
+        # Port-discovery configuration
+        port_mode = self.get("scanning.ports.mode", "common")
+        valid_port_modes = {"common", "top", "explicit", "range", "all"}
+        if port_mode not in valid_port_modes:
+            raise ConfigError(
+                f"scanning.ports.mode must be one of {sorted(valid_port_modes)}."
+            )
+
+        ports = self.get("scanning.ports.ports", [])
+        if not isinstance(ports, list):
+            raise ConfigError("scanning.ports.ports must be a list.")
+
+        for port in ports:
+            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+                raise ConfigError(
+                    "scanning.ports.ports entries must be integers between 1 and 65535."
+                )
+
+        ranges = self.get("scanning.ports.ranges", [])
+        if not isinstance(ranges, list):
+            raise ConfigError("scanning.ports.ranges must be a list.")
+
+        for port_range in ranges:
+            if (
+                not isinstance(port_range, (list, tuple))
+                or len(port_range) != 2
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 1 <= value <= 65535
+                    for value in port_range
+                )
+                or port_range[0] > port_range[1]
+            ):
+                raise ConfigError(
+                    "scanning.ports.ranges entries must be [start, end] "
+                    "with ports between 1 and 65535."
+                )
+
+        top = self.get("scanning.ports.top")
+        if top is not None:
+            if isinstance(top, bool) or not isinstance(top, int) or top <= 0:
+                raise ConfigError("scanning.ports.top must be a positive integer or null.")
+
+        if port_mode == "top" and top is None:
+            raise ConfigError(
+                "scanning.ports.top is required when scanning.ports.mode is 'top'."
+            )
+
+        port_workers = self.get("scanning.ports.max_workers", 100)
+        if (
+            isinstance(port_workers, bool)
+            or not isinstance(port_workers, int)
+            or not 1 <= port_workers <= 1024
+        ):
+            raise ConfigError(
+                "scanning.ports.max_workers must be between 1 and 1024."
+            )
+
+        port_timeout = self.get("scanning.ports.timeout", 2)
+        if (
+            isinstance(port_timeout, bool)
+            or not isinstance(port_timeout, (int, float))
+            or not 0.1 <= port_timeout <= 3600
+        ):
+            raise ConfigError(
+                "scanning.ports.timeout must be between 0.1 and 3600."
+            )
 
         valid_formats = {"html", "json", "markdown", "csv", "pdf"}
         formats = self.get("reporting.formats", [])
