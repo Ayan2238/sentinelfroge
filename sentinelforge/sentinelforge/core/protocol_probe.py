@@ -87,6 +87,14 @@ class ProtocolProbe:
 
         service_name = (service or "unknown").lower()
 
+        if service_name == "ftp" or port == 21:
+            return self._probe_ftp(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
         if service_name == "ssh" or port in {22, 2222}:
             return self._probe_ssh(
                 target,
@@ -130,6 +138,547 @@ class ProtocolProbe:
             transport,
             f"No protocol probe is registered for service '{service}'.",
         )
+
+    def _probe_ftp(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Probe FTP protocol capabilities without authentication or file I/O."""
+
+        family = (
+            socket.AF_INET6
+            if address_family.lower() in {"ipv6", "af_inet6"}
+            else socket.AF_INET
+        )
+
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(self._timeout)
+
+        try:
+            sock.connect((address, port))
+
+            greeting = self._ftp_read_response(sock)
+
+            if greeting is None:
+                return ProtocolObservation(
+                    target=target,
+                    address=address,
+                    address_family=address_family,
+                    port=port,
+                    transport="tcp",
+                    protocol="ftp",
+                    success=False,
+                    identification_method="ftp_greeting_missing",
+                    confidence=0.0,
+                    timestamp=self._timestamp(),
+                    evidence=("FTP server did not provide a valid greeting.",),
+                    error="ftp_greeting_missing",
+                )
+
+            greeting_code, greeting_lines = greeting
+
+            data: dict[str, Any] = {
+                "greeting_code": greeting_code,
+                "greeting_lines": greeting_lines,
+                "banner": "\n".join(greeting_lines),
+                "commands": {},
+                "features": [],
+                "feature_details": [],
+                "system_type": None,
+                "working_directory": None,
+                "passive_mode": None,
+                "explicit_tls": None,
+            }
+
+            evidence = [
+                "FTP protocol confirmed by server greeting.",
+                f"FTP greeting response code: {greeting_code}",
+            ]
+
+            if greeting_lines:
+                evidence.append(
+                    f"FTP server greeting: {greeting_lines[0]}"
+                )
+
+            commands = ("FEAT", "SYST", "PWD", "AUTH TLS")
+
+            for command in commands:
+                response = self._ftp_command(sock, command)
+
+                command_key = command.lower().replace(" ", "_")
+
+                if response is None:
+                    data["commands"][command_key] = {
+                        "code": None,
+                        "lines": [],
+                        "status": "no_response",
+                    }
+                    evidence.append(
+                        f"FTP {command} produced no valid response."
+                    )
+                    continue
+
+                code, lines = response
+
+                data["commands"][command_key] = {
+                    "code": code,
+                    "lines": lines,
+                    "status": self._classify_ftp_response(code),
+                }
+
+                evidence.append(
+                    f"FTP {command} response code: {code}"
+                )
+
+                if command == "FEAT":
+                    features = []
+                    feature_details = []
+
+                    for line in lines:
+                        stripped = line.strip()
+
+                        if not stripped:
+                            continue
+
+                        if stripped[:3].isdigit():
+                            continue
+
+                        parts = stripped.split(None, 1)
+                        feature = parts[0].upper()
+
+                        if feature in {"EXTENSIONS", "END"}:
+                            continue
+
+                        arguments = parts[1].strip() if len(parts) > 1 else None
+
+                        features.append(feature)
+                        feature_details.append(
+                            {
+                                "name": feature,
+                                "arguments": arguments,
+                                "raw": stripped,
+                            }
+                        )
+
+                    data["features"] = list(dict.fromkeys(features))
+                    data["feature_details"] = feature_details
+
+                    if features:
+                        evidence.append(
+                            "FTP advertised features: "
+                            + ", ".join(data["features"])
+                        )
+
+                    if feature_details:
+                        evidence.append(
+                            "FTP FEAT advertisement details captured."
+                        )
+
+                    passive_command = (
+                        "EPSV" if "EPSV" in data["features"] else "PASV"
+                    )
+                    passive_response = self._ftp_command(
+                        sock,
+                        passive_command,
+                    )
+
+                    passive_key = passive_command.lower()
+
+                    if passive_response is None:
+                        data["commands"][passive_key] = {
+                            "code": None,
+                            "lines": [],
+                            "status": "no_response",
+                        }
+                        evidence.append(
+                            f"FTP {passive_command} produced no valid response."
+                        )
+                    else:
+                        passive_code, passive_lines = passive_response
+
+                        data["commands"][passive_key] = {
+                            "code": passive_code,
+                            "lines": passive_lines,
+                            "status": self._classify_ftp_response(passive_code),
+                        }
+
+                        if passive_command == "EPSV":
+                            passive = self._parse_ftp_epsv(passive_lines)
+
+                            data["passive_mode"] = {
+                                "mode": "EPSV",
+                                "supported": passive["supported"],
+                                "port": passive["port"],
+                                "raw": passive["raw"],
+                            }
+                        else:
+                            passive = self._parse_ftp_pasv(passive_lines)
+
+                            data["passive_mode"] = {
+                                "mode": "PASV",
+                                "supported": passive["supported"],
+                                "address": passive["address"],
+                                "port": passive["port"],
+                                "raw": passive["raw"],
+                            }
+
+                        evidence.append(
+                            f"FTP {passive_command} response code: "
+                            f"{passive_code}"
+                        )
+
+                        if passive["supported"]:
+                            if passive_command == "EPSV":
+                                evidence.append(
+                                    f"FTP EPSV passive mode accepted on port "
+                                    f"{passive['port']}."
+                                )
+                            else:
+                                evidence.append(
+                                    f"FTP PASV passive mode accepted at "
+                                    f"{passive['address']}:{passive['port']}."
+                                )
+                        else:
+                            evidence.append(
+                                f"FTP {passive_command} response did not contain "
+                                "a valid passive endpoint."
+                            )
+
+                elif command == "SYST":
+                    payload = [
+                        line.strip()
+                        for line in lines
+                        if line[:3].isdigit() and len(line) > 4
+                    ]
+
+                    if payload:
+                        data["system_type"] = payload[0][4:].strip()
+
+                    if data["system_type"]:
+                        evidence.append(
+                            f"FTP system type: {data['system_type']}"
+                        )
+
+                elif command == "PWD":
+                    payload = [
+                        line.strip()
+                        for line in lines
+                        if line[:3].isdigit() and len(line) > 4
+                    ]
+
+                    if payload:
+                        data["working_directory"] = payload[0][4:].strip()
+
+                    if data["working_directory"]:
+                        evidence.append(
+                            "FTP server reported initial working-directory state."
+                        )
+
+                elif command == "AUTH TLS":
+                    data["explicit_tls"] = 200 <= code < 400
+                    data["tls_handshake"] = None
+                    data["tls"] = None
+
+                    if data["explicit_tls"]:
+                        evidence.append(
+                            "FTP server accepted the AUTH TLS capability request."
+                        )
+
+                        try:
+                            context = (
+                                ssl_context(self._config)
+                                if self._config is not None
+                                else ssl.create_default_context()
+                            )
+
+                            server_hostname = None
+                            if ":" not in address and not address.replace(
+                                ".", ""
+                            ).isdigit():
+                                server_hostname = target
+
+                            tls_sock = context.wrap_socket(
+                                sock,
+                                server_hostname=server_hostname,
+                            )
+                            sock = tls_sock
+
+                            data["tls_handshake"] = True
+                            data["tls"] = self._tls_socket_metadata(tls_sock)
+
+                            evidence.append(
+                                "FTP AUTH TLS handshake completed successfully."
+                            )
+
+                            tls_version = data["tls"].get("version")
+                            tls_cipher = data["tls"].get("cipher")
+
+                            if tls_version:
+                                evidence.append(
+                                    f"FTP TLS version: {tls_version}"
+                                )
+
+                            if tls_cipher:
+                                evidence.append(
+                                    f"FTP TLS cipher: {tls_cipher}"
+                                )
+
+                        except (
+                            ssl.SSLError,
+                            TimeoutError,
+                            ConnectionResetError,
+                            OSError,
+                            ValueError,
+                        ) as exc:
+                            data["tls_handshake"] = False
+                            data["tls"] = self._empty_tls_metadata()
+                            data["tls_error"] = str(exc)
+
+                            evidence.append(
+                                "FTP AUTH TLS was accepted, but the TLS "
+                                "handshake failed."
+                            )
+                    else:
+                        evidence.append(
+                            "FTP server did not accept the AUTH TLS request."
+                        )
+
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="ftp",
+                success=True,
+                identification_method="ftp_greeting_and_capability_probe",
+                confidence=0.99,
+                timestamp=self._timestamp(),
+                data=data,
+                evidence=tuple(evidence),
+            )
+
+        except (TimeoutError, ConnectionResetError, OSError, ValueError) as exc:
+            return self._error_observation(
+                target,
+                address,
+                address_family,
+                port,
+                "ftp",
+                "connection_failed",
+                exc,
+            )
+        finally:
+            sock.close()
+
+    @staticmethod
+    def _parse_ftp_epsv(
+        lines: list[str],
+    ) -> dict[str, Any]:
+        """Parse an FTP EPSV response without contacting the data port."""
+
+        result: dict[str, Any] = {
+            "supported": False,
+            "port": None,
+            "raw": None,
+        }
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            if stripped[:3].isdigit() and len(stripped) > 4:
+                payload = stripped[4:].strip()
+            else:
+                payload = stripped
+
+            result["raw"] = payload
+
+            if not payload.startswith("Entering Extended Passive Mode"):
+                continue
+
+            start = payload.find("(")
+            end = payload.rfind(")")
+
+            if start == -1 or end <= start + 1:
+                continue
+
+            value = payload[start + 1:end]
+
+            if len(value) < 5:
+                continue
+
+            delimiter = value[0]
+            fields = value.split(delimiter)
+
+            if len(fields) != 5:
+                continue
+
+            if fields[1] or fields[2] or not fields[3] or fields[4]:
+                continue
+
+            try:
+                port = int(fields[3] if fields[3] else fields[4])
+            except ValueError:
+                continue
+
+            if not 1 <= port <= 65535:
+                continue
+
+            result["supported"] = True
+            result["port"] = port
+            return result
+
+        return result
+
+    @staticmethod
+    def _classify_ftp_response(code: int) -> str:
+        """Classify an FTP reply code into its standard response class."""
+
+        if 100 <= code < 200:
+            return "preliminary"
+        if 200 <= code < 300:
+            return "success"
+        if 300 <= code < 400:
+            return "continuation"
+        if 400 <= code < 500:
+            return "transient_error"
+        if 500 <= code < 600:
+            return "permanent_error"
+        return "unknown"
+
+    @staticmethod
+    def _parse_ftp_pasv(
+        lines: list[str],
+    ) -> dict[str, Any]:
+        """Parse an FTP PASV response without contacting the data port."""
+
+        result: dict[str, Any] = {
+            "supported": False,
+            "address": None,
+            "port": None,
+            "raw": None,
+        }
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped:
+                continue
+
+            if stripped[:3].isdigit() and len(stripped) > 4:
+                payload = stripped[4:].strip()
+            else:
+                payload = stripped
+
+            result["raw"] = payload
+
+            if not payload.lower().startswith("entering passive mode"):
+                continue
+
+            start = payload.find("(")
+            end = payload.rfind(")")
+
+            if start == -1 or end <= start + 1:
+                continue
+
+            value = payload[start + 1:end]
+            parts = [part.strip() for part in value.split(",")]
+
+            if len(parts) != 6:
+                continue
+
+            try:
+                octets = [int(part) for part in parts[:4]]
+                high = int(parts[4])
+                low = int(parts[5])
+            except ValueError:
+                continue
+
+            if any(not 0 <= octet <= 255 for octet in octets):
+                continue
+
+            if not 0 <= high <= 255 or not 0 <= low <= 255:
+                continue
+
+            port = (high * 256) + low
+
+            if not 1 <= port <= 65535:
+                continue
+
+            result["supported"] = True
+            result["address"] = ".".join(str(octet) for octet in octets)
+            result["port"] = port
+            return result
+
+        return result
+
+    def _ftp_command(
+        self,
+        sock: socket.socket,
+        command: str,
+    ) -> tuple[int, list[str]] | None:
+        """Send one bounded, non-authenticating FTP command."""
+
+        if not command or "\r" in command or "\n" in command:
+            raise ValueError("invalid FTP command")
+
+        encoded = (command + "\r\n").encode("ascii")
+
+        if len(encoded) > 1024:
+            raise ValueError("FTP command exceeds maximum length")
+
+        sock.sendall(encoded)
+
+        return self._ftp_read_response(sock)
+
+    def _ftp_read_response(
+        self,
+        sock: socket.socket,
+    ) -> tuple[int, list[str]] | None:
+        """Read one bounded FTP response, including multiline responses."""
+
+        max_bytes = min(self._max_body_bytes, 65536)
+        data = bytearray()
+
+        while len(data) < max_bytes:
+            chunk = sock.recv(min(1024, max_bytes - len(data)))
+
+            if not chunk:
+                break
+
+            data.extend(chunk)
+
+            if b"\n" in data:
+                lines = bytes(data).decode(
+                    "utf-8",
+                    errors="replace",
+                ).splitlines()
+
+                if not lines:
+                    continue
+
+                first = lines[0]
+
+                if len(first) < 3 or not first[:3].isdigit():
+                    return None
+
+                code = int(first[:3])
+
+                if len(first) >= 4 and first[3] == "-":
+                    terminator = f"{code} "
+                    if any(line.startswith(terminator) for line in lines[1:]):
+                        return code, lines
+                    continue
+
+                return code, lines
+
+        return None
 
     def _probe_http(
         self,
@@ -655,6 +1204,92 @@ class ProtocolProbe:
             data.extend(chunk)
 
         return bytes(data)
+
+    @staticmethod
+    def _empty_tls_metadata() -> dict[str, Any]:
+        """Return the shared empty TLS metadata structure."""
+
+        return {
+            "version": None,
+            "cipher": None,
+            "certificate_sha256": None,
+            "certificate_subject": None,
+            "certificate_issuer": None,
+            "certificate_serial": None,
+            "certificate_not_before": None,
+            "certificate_not_after": None,
+            "certificate_sans": [],
+            "public_key_type": None,
+            "public_key_size": None,
+            "signature_hash": None,
+        }
+
+    @staticmethod
+    def _tls_socket_metadata(sock: ssl.SSLSocket) -> dict[str, Any]:
+        """Extract TLS metadata directly from a negotiated TLS socket."""
+
+        result = ProtocolProbe._empty_tls_metadata()
+
+        try:
+            result["version"] = sock.version()
+
+            cipher = sock.cipher()
+            if cipher:
+                result["cipher"] = cipher[0]
+
+            der_cert = sock.getpeercert(binary_form=True)
+            if not der_cert:
+                return result
+
+            import hashlib
+
+            result["certificate_sha256"] = hashlib.sha256(
+                der_cert
+            ).hexdigest()
+
+            cert = x509.load_der_x509_certificate(der_cert)
+
+            result["certificate_subject"] = cert.subject.rfc4514_string()
+            result["certificate_issuer"] = cert.issuer.rfc4514_string()
+            result["certificate_serial"] = str(cert.serial_number)
+            result["certificate_not_before"] = (
+                cert.not_valid_before_utc.isoformat()
+            )
+            result["certificate_not_after"] = (
+                cert.not_valid_after_utc.isoformat()
+            )
+
+            try:
+                san = cert.extensions.get_extension_for_class(
+                    x509.SubjectAlternativeName
+                ).value
+
+                result["certificate_sans"] = [
+                    str(value)
+                    for value in san.get_values_for_type(x509.DNSName)
+                ] + [
+                    str(value)
+                    for value in san.get_values_for_type(x509.IPAddress)
+                ]
+            except x509.ExtensionNotFound:
+                pass
+
+            public_key = cert.public_key()
+            result["public_key_type"] = type(public_key).__name__
+            result["public_key_size"] = getattr(
+                public_key,
+                "key_size",
+                None,
+            )
+
+            signature_hash = cert.signature_hash_algorithm
+            if signature_hash is not None:
+                result["signature_hash"] = signature_hash.name
+
+        except (AttributeError, OSError, ValueError, TypeError):
+            return result
+
+        return result
 
     @staticmethod
     def _tls_metadata(response: Any) -> dict[str, Any]:

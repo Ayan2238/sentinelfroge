@@ -22,7 +22,7 @@ general:
 network:
   proxy: null              # e.g. "http://127.0.0.1:8080"
   verify_ssl: true         # Set false only for explicitly trusted test targets
-  rate_limit: 5           # max requests per second (0 = unlimited)
+  rate_limit: 10          # max requests per second (0 = unlimited)
   connect_timeout: 10
   read_timeout: 30
 
