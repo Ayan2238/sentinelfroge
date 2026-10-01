@@ -8,11 +8,107 @@ from sentinelforge.core.port_discovery import PortDiscovery, PortDiscoveryConfig
 from sentinelforge.core.service_identifier import ServiceIdentifier
 from sentinelforge.core.banner_grabber import BannerGrabber
 from sentinelforge.core.version_identifier import VersionIdentifier
+from sentinelforge.core.protocol_probe import ProtocolProbe
 from sentinelforge.modules.base import Severity
 from sentinelforge.plugins.base import BasePlugin, PluginResult
 
 if TYPE_CHECKING:
     from sentinelforge.core.target import Target
+
+def _ftp_security_findings(
+    plugin: "NetworkPlugin",
+    target: "Target",
+    observation: object,
+) -> list:
+    """Derive conservative FTP security findings from observed probe data."""
+
+    if getattr(observation, "protocol", "") != "ftp":
+        return []
+
+    data = getattr(observation, "data", {}) or {}
+    session = data.get("session") or {}
+    explicit_tls = session.get("explicit_tls") or {}
+
+    findings = []
+
+    tls_supported = explicit_tls.get("supported")
+    tls_handshake = explicit_tls.get("handshake")
+
+    if tls_supported is False:
+        findings.append(
+            plugin._finding(
+                title="FTP Explicit TLS Not Accepted",
+                severity=Severity.LOW,
+                target=target,
+                description=(
+                    "The FTP server did not accept the AUTH TLS request. "
+                    "The control channel therefore remained plaintext during "
+                    "the protocol probe."
+                ),
+                evidence=[
+                    evidence
+                    for evidence in getattr(observation, "evidence", ())
+                    if "AUTH TLS" in evidence or "TLS" in evidence
+                ],
+                recommendation=(
+                    "If FTP must remain available, enable and enforce "
+                    "explicit TLS where supported, and avoid transmitting "
+                    "credentials or sensitive data over plaintext FTP."
+                ),
+                tags=[
+                    "network",
+                    "ftp",
+                    "protocol-security",
+                    "cleartext",
+                ],
+                confidence=0.99,
+                raw_data={
+                    "protocol": "ftp",
+                    "security_condition": "explicit_tls_not_accepted",
+                    "explicit_tls": explicit_tls,
+                    "session": session,
+                },
+            )
+        )
+
+    elif tls_supported is True and tls_handshake is False:
+        findings.append(
+            plugin._finding(
+                title="FTP Explicit TLS Handshake Failed",
+                severity=Severity.LOW,
+                target=target,
+                description=(
+                    "The FTP server accepted the AUTH TLS request, but the "
+                    "subsequent TLS handshake did not complete successfully."
+                ),
+                evidence=[
+                    evidence
+                    for evidence in getattr(observation, "evidence", ())
+                    if "AUTH TLS" in evidence
+                    or "TLS handshake" in evidence
+                    or "TLS negotiation" in evidence
+                ],
+                recommendation=(
+                    "Verify the FTP server's TLS configuration and confirm "
+                    "that explicit TLS negotiation completes successfully."
+                ),
+                tags=[
+                    "network",
+                    "ftp",
+                    "protocol-security",
+                    "tls",
+                ],
+                confidence=0.95,
+                raw_data={
+                    "protocol": "ftp",
+                    "security_condition": "explicit_tls_handshake_failed",
+                    "explicit_tls": explicit_tls,
+                    "session": session,
+                },
+            )
+        )
+
+    return findings
 
 
 class NetworkPlugin(BasePlugin):
@@ -81,10 +177,31 @@ class NetworkPlugin(BasePlugin):
             for version in versions
         }
 
+        protocol_probe = ProtocolProbe(
+            self._config,
+            timeout=config.timeout,
+        )
+        protocol_observations = [
+            protocol_probe.probe(
+                target.host,
+                service.address,
+                service.address_family,
+                service.port,
+                service.service,
+                service.transport,
+            )
+            for service in services
+        ]
+        protocol_by_key = {
+            (observation.address, observation.port, observation.transport): observation
+            for observation in protocol_observations
+        }
+
         for service in services:
             key = (service.address, service.port, service.transport)
             banner = banner_by_key.get(key)
             version = version_by_key.get(key)
+            protocol = protocol_by_key.get(key)
 
             evidence = list(service.evidence)
 
@@ -99,6 +216,9 @@ class NetworkPlugin(BasePlugin):
                 and version.version != "unknown"
             ):
                 evidence.extend(version.evidence)
+
+            if protocol is not None:
+                evidence.extend(protocol.evidence)
 
             severity = Severity.INFO
 
@@ -158,9 +278,31 @@ class NetworkPlugin(BasePlugin):
                             if version is not None
                             else {}
                         ),
+                        **(
+                            {
+                                "protocol": protocol.protocol,
+                                "protocol_success": protocol.success,
+                                "protocol_confidence": protocol.confidence,
+                                "protocol_identification_method": (
+                                    protocol.identification_method
+                                ),
+                                "protocol_data": protocol.data,
+                                "protocol_error": protocol.error,
+                            }
+                            if protocol is not None
+                            else {}
+                        ),
                     },
                 )
             )
+
+            if protocol is not None:
+                for security_finding in _ftp_security_findings(
+                    self,
+                    target,
+                    protocol,
+                ):
+                    result.add_finding(security_finding)
 
         result.metadata["ports_scanned"] = discovery.ports_scanned
         result.metadata["open_ports"] = list(discovery.open_ports)
@@ -170,6 +312,11 @@ class NetworkPlugin(BasePlugin):
             for version in versions
             if version.product != "unknown"
             and version.version != "unknown"
+        )
+        result.metadata["protocols_probed"] = sum(
+            1
+            for observation in protocol_observations
+            if observation.success
         )
 
         result.status = "success"
