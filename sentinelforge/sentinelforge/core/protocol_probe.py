@@ -452,6 +452,8 @@ class ProtocolProbe:
                             "FTP server did not accept the AUTH TLS request."
                         )
 
+            data["session"] = self._build_ftp_session_profile(data)
+
             return ProtocolObservation(
                 target=target,
                 address=address,
@@ -557,6 +559,52 @@ class ProtocolProbe:
         if 500 <= code < 600:
             return "permanent_error"
         return "unknown"
+
+    @staticmethod
+    def _build_ftp_session_profile(
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build structured FTP session intelligence from probe results."""
+
+        commands = data.get("commands", {})
+        passive_mode = data.get("passive_mode") or {}
+        tls = data.get("tls") or {}
+
+        command_status = {
+            name: details.get("status")
+            for name, details in commands.items()
+        }
+
+        return {
+            "protocol": "ftp",
+            "greeting": {
+                "code": data.get("greeting_code"),
+                "present": bool(data.get("greeting_lines")),
+            },
+            "capabilities": {
+                "advertised": list(data.get("features") or []),
+                "details": list(data.get("feature_details") or []),
+            },
+            "system": {
+                "type": data.get("system_type"),
+            },
+            "working_directory": {
+                "reported": data.get("working_directory") is not None,
+            },
+            "passive_mode": {
+                "mode": passive_mode.get("mode"),
+                "supported": passive_mode.get("supported"),
+                "port": passive_mode.get("port"),
+            },
+            "explicit_tls": {
+                "supported": data.get("explicit_tls"),
+                "handshake": data.get("tls_handshake"),
+                "version": tls.get("version"),
+                "cipher": tls.get("cipher"),
+            },
+            "command_status": command_status,
+        }
+
 
     @staticmethod
     def _parse_ftp_pasv(
