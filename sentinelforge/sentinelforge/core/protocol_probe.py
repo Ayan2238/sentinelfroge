@@ -156,11 +156,12 @@ class ProtocolProbe:
 
         sock = socket.socket(family, socket.SOCK_STREAM)
         sock.settimeout(self._timeout)
+        response_buffer = bytearray()
 
         try:
             sock.connect((address, port))
 
-            greeting = self._ftp_read_response(sock)
+            greeting = self._ftp_read_response(sock, response_buffer)
 
             if greeting is None:
                 return ProtocolObservation(
@@ -206,7 +207,11 @@ class ProtocolProbe:
             commands = ("FEAT", "SYST", "PWD", "AUTH TLS")
 
             for command in commands:
-                response = self._ftp_command(sock, command)
+                response = self._ftp_command(
+                    sock,
+                    command,
+                    response_buffer,
+                )
 
                 command_key = command.lower().replace(" ", "_")
 
@@ -283,6 +288,7 @@ class ProtocolProbe:
                     passive_response = self._ftp_command(
                         sock,
                         passive_command,
+                        response_buffer,
                     )
 
                     passive_key = passive_command.lower()
@@ -622,6 +628,7 @@ class ProtocolProbe:
         self,
         sock: socket.socket,
         command: str,
+        response_buffer: bytearray,
     ) -> tuple[int, list[str]] | None:
         """Send one bounded, non-authenticating FTP command."""
 
@@ -635,50 +642,99 @@ class ProtocolProbe:
 
         sock.sendall(encoded)
 
-        return self._ftp_read_response(sock)
+        return self._ftp_read_response(sock, response_buffer)
 
     def _ftp_read_response(
         self,
         sock: socket.socket,
+        response_buffer: bytearray,
     ) -> tuple[int, list[str]] | None:
-        """Read one bounded FTP response, including multiline responses."""
+        """Read exactly one bounded FTP response from a connection buffer."""
 
         max_bytes = min(self._max_body_bytes, 65536)
-        data = bytearray()
 
-        while len(data) < max_bytes:
-            chunk = sock.recv(min(1024, max_bytes - len(data)))
+        while True:
+            newline = response_buffer.find(b"\n")
 
-            if not chunk:
-                break
-
-            data.extend(chunk)
-
-            if b"\n" in data:
-                lines = bytes(data).decode(
-                    "utf-8",
-                    errors="replace",
-                ).splitlines()
-
-                if not lines:
-                    continue
-
-                first = lines[0]
-
-                if len(first) < 3 or not first[:3].isdigit():
+            if newline == -1:
+                if len(response_buffer) >= max_bytes:
                     return None
 
-                code = int(first[:3])
+                chunk = sock.recv(
+                    min(1024, max_bytes - len(response_buffer))
+                )
 
-                if len(first) >= 4 and first[3] == "-":
-                    terminator = f"{code} "
-                    if any(line.startswith(terminator) for line in lines[1:]):
-                        return code, lines
+                if not chunk:
+                    return None
+
+                response_buffer.extend(chunk)
+                continue
+
+            first = bytes(
+                response_buffer[:newline + 1]
+            ).decode(
+                "utf-8",
+                errors="replace",
+            ).rstrip("\r\n")
+
+            if len(first) < 3 or not first[:3].isdigit():
+                return None
+
+            code = int(first[:3])
+            multiline = len(first) >= 4 and first[3] == "-"
+
+            if not multiline:
+                del response_buffer[:newline + 1]
+                return code, [first]
+
+            terminator = f"{code} "
+            search_from = newline + 1
+
+            while True:
+                next_newline = response_buffer.find(
+                    b"\n",
+                    search_from,
+                )
+
+                if next_newline == -1:
+                    if len(response_buffer) >= max_bytes:
+                        return None
+
+                    chunk = sock.recv(
+                        min(1024, max_bytes - len(response_buffer))
+                    )
+
+                    if not chunk:
+                        return None
+
+                    response_buffer.extend(chunk)
                     continue
 
-                return code, lines
+                line = bytes(
+                    response_buffer[
+                        search_from:next_newline + 1
+                    ]
+                ).decode(
+                    "utf-8",
+                    errors="replace",
+                ).rstrip("\r\n")
 
-        return None
+                if line.startswith(terminator):
+                    consumed = next_newline + 1
+                    raw_response = bytes(
+                        response_buffer[:consumed]
+                    )
+                    del response_buffer[:consumed]
+
+                    return (
+                        code,
+                        raw_response.decode(
+                            "utf-8",
+                            errors="replace",
+                        ).splitlines(),
+                    )
+
+                search_from = next_newline + 1
 
     def _probe_http(
         self,
