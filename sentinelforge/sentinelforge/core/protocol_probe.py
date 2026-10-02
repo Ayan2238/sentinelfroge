@@ -271,6 +271,52 @@ class ProtocolProbe:
                     data["features"] = list(dict.fromkeys(features))
                     data["feature_details"] = feature_details
 
+                    capability_groups = {
+                        "security": [],
+                        "transport": [],
+                        "transfer": [],
+                        "encoding": [],
+                        "metadata": [],
+                        "other": [],
+                    }
+
+                    security_features = {
+                        "AUTH", "PBSZ", "PROT", "TLS", "SSL"
+                    }
+                    transport_features = {
+                        "EPSV", "PASV"
+                    }
+                    transfer_features = {
+                        "APPE", "ESTA", "ESTP", "LIST", "MDTM",
+                        "MLSD", "MLST", "NLST", "REST", "RETR",
+                        "SIZE", "STOR", "STOU", "STRU", "THMB"
+                    }
+                    encoding_features = {
+                        "UTF8", "UTF-8"
+                    }
+                    metadata_features = {
+                        "CLNT", "FEAT", "HELP", "LANG", "MFF",
+                        "MFCT", "OPTS", "SITE", "TVFS"
+                    }
+
+                    for feature in data["features"]:
+                        if feature in security_features:
+                            group = "security"
+                        elif feature in transport_features:
+                            group = "transport"
+                        elif feature in transfer_features:
+                            group = "transfer"
+                        elif feature in encoding_features:
+                            group = "encoding"
+                        elif feature in metadata_features:
+                            group = "metadata"
+                        else:
+                            group = "other"
+
+                        capability_groups[group].append(feature)
+
+                    data["capability_groups"] = capability_groups
+
                     if features:
                         evidence.append(
                             "FTP advertised features: "
@@ -584,6 +630,12 @@ class ProtocolProbe:
             "capabilities": {
                 "advertised": list(data.get("features") or []),
                 "details": list(data.get("feature_details") or []),
+                "groups": {
+                    name: list(values)
+                    for name, values in (
+                        data.get("capability_groups") or {}
+                    ).items()
+                },
             },
             "system": {
                 "type": data.get("system_type"),
