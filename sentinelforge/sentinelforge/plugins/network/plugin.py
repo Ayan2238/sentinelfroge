@@ -15,6 +15,75 @@ from sentinelforge.plugins.base import BasePlugin, PluginResult
 if TYPE_CHECKING:
     from sentinelforge.core.target import Target
 
+def _build_ftp_composite_fingerprint(
+    version: object,
+    protocol: object,
+) -> dict:
+    """Combine existing FTP observations into one structured fingerprint."""
+
+    data = getattr(protocol, "data", {}) or {}
+    session = data.get("session") or {}
+
+    capabilities = session.get("capabilities") or {}
+    explicit_tls = session.get("explicit_tls") or {}
+    passive_mode = session.get("passive_mode") or {}
+
+    product = getattr(version, "product", "unknown")
+    version_value = getattr(version, "version", "unknown")
+
+    fingerprint = {
+        "protocol": "ftp",
+        "product": product,
+        "version": version_value,
+        "system_type": (
+            (session.get("system") or {}).get("type")
+        ),
+        "greeting": {
+            "code": (session.get("greeting") or {}).get("code"),
+            "present": (session.get("greeting") or {}).get("present"),
+        },
+        "capabilities": {
+            "advertised": list(
+                capabilities.get("advertised") or []
+            ),
+            "groups": dict(
+                capabilities.get("groups") or {}
+            ),
+        },
+        "passive_mode": {
+            "mode": passive_mode.get("mode"),
+            "supported": passive_mode.get("supported"),
+            "address": passive_mode.get("address"),
+            "port": passive_mode.get("port"),
+            "address_scope": passive_mode.get("address_scope"),
+        },
+        "tls": {
+            "supported": explicit_tls.get("supported"),
+            "handshake": explicit_tls.get("handshake"),
+            "version": explicit_tls.get("version"),
+            "cipher": explicit_tls.get("cipher"),
+        },
+        "confidence": {
+            "protocol": getattr(protocol, "confidence", 0.0),
+            "version": getattr(version, "confidence", 0.0),
+        },
+        "identification": {
+            "protocol_method": getattr(
+                protocol,
+                "identification_method",
+                None,
+            ),
+            "version_method": getattr(
+                version,
+                "identification_method",
+                None,
+            ),
+        },
+    }
+
+    return fingerprint
+
+
 def _ftp_security_findings(
     plugin: "NetworkPlugin",
     target: "Target",
@@ -203,6 +272,17 @@ class NetworkPlugin(BasePlugin):
             version = version_by_key.get(key)
             protocol = protocol_by_key.get(key)
 
+            ftp_fingerprint = None
+            if (
+                protocol is not None
+                and getattr(protocol, "protocol", "") == "ftp"
+                and version is not None
+            ):
+                ftp_fingerprint = _build_ftp_composite_fingerprint(
+                    version,
+                    protocol,
+                )
+
             evidence = list(service.evidence)
 
             if banner is not None and banner.text:
@@ -290,6 +370,13 @@ class NetworkPlugin(BasePlugin):
                                 "protocol_error": protocol.error,
                             }
                             if protocol is not None
+                            else {}
+                        ),
+                        **(
+                            {
+                                "ftp_fingerprint": ftp_fingerprint,
+                            }
+                            if ftp_fingerprint is not None
                             else {}
                         ),
                     },

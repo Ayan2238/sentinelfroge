@@ -8,6 +8,7 @@ handshakes; security-specific checks remain in their existing plugins.
 
 from __future__ import annotations
 
+import ipaddress
 import socket
 import ssl
 import urllib.error
@@ -363,19 +364,45 @@ class ProtocolProbe:
                             data["passive_mode"] = {
                                 "mode": "EPSV",
                                 "supported": passive["supported"],
+                                "address": address,
                                 "port": passive["port"],
+                                "address_source": "control_connection",
                                 "raw": passive["raw"],
                             }
+
+                            if passive["supported"]:
+                                data["passive_mode"]["address_scope"] = (
+                                    self._classify_ftp_passive_address(
+                                        address
+                                    )
+                                )
                         else:
                             passive = self._parse_ftp_pasv(passive_lines)
+
+                            passive_address = passive["address"]
 
                             data["passive_mode"] = {
                                 "mode": "PASV",
                                 "supported": passive["supported"],
-                                "address": passive["address"],
+                                "address": passive_address,
                                 "port": passive["port"],
                                 "raw": passive["raw"],
                             }
+
+                            if passive["supported"] and passive_address:
+                                data["passive_mode"]["address_scope"] = (
+                                    self._classify_ftp_passive_address(
+                                        passive_address
+                                    )
+                                )
+                                data["passive_mode"][
+                                    "address_matches_control"
+                                ] = (
+                                    self._ftp_passive_address_matches_control(
+                                        passive_address,
+                                        address,
+                                    )
+                                )
 
                         evidence.append(
                             f"FTP {passive_command} response code: "
@@ -478,6 +505,71 @@ class ProtocolProbe:
                                     f"FTP TLS cipher: {tls_cipher}"
                                 )
 
+                            pbsz_response = self._ftp_command(
+                                sock,
+                                "PBSZ 0",
+                                response_buffer,
+                            )
+
+                            if pbsz_response is None:
+                                data["commands"]["pbsz"] = {
+                                    "code": None,
+                                    "lines": [],
+                                    "status": "no_response",
+                                }
+                            else:
+                                pbsz_code, pbsz_lines = pbsz_response
+                                data["commands"]["pbsz"] = {
+                                    "code": pbsz_code,
+                                    "lines": pbsz_lines,
+                                    "status": self._classify_ftp_response(
+                                        pbsz_code
+                                    ),
+                                }
+
+                            prot_response = self._ftp_command(
+                                sock,
+                                "PROT P",
+                                response_buffer,
+                            )
+
+                            if prot_response is None:
+                                data["commands"]["prot_p"] = {
+                                    "code": None,
+                                    "lines": [],
+                                    "status": "no_response",
+                                }
+                            else:
+                                prot_code, prot_lines = prot_response
+                                data["commands"]["prot_p"] = {
+                                    "code": prot_code,
+                                    "lines": prot_lines,
+                                    "status": self._classify_ftp_response(
+                                        prot_code
+                                    ),
+                                }
+
+                            data["tls_protection"] = {
+                                "control_channel": {
+                                    "supported": True,
+                                    "handshake": True,
+                                },
+                                "data_channel": {
+                                    "pbsz": data["commands"]["pbsz"],
+                                    "prot_p": data["commands"]["prot_p"],
+                                    "private_requested": (
+                                        data["commands"]["prot_p"].get(
+                                            "status"
+                                        ) == "success"
+                                    ),
+                                },
+                            }
+
+                            evidence.append(
+                                "FTP TLS data-channel protection state "
+                                "was inspected with PBSZ 0 and PROT P."
+                            )
+
                         except (
                             ssl.SSLError,
                             TimeoutError,
@@ -498,6 +590,7 @@ class ProtocolProbe:
                             "FTP server did not accept the AUTH TLS request."
                         )
 
+            data["anomalies"] = self._detect_ftp_anomalies(data)
             data["session"] = self._build_ftp_session_profile(data)
 
             return ProtocolObservation(
@@ -527,6 +620,45 @@ class ProtocolProbe:
             )
         finally:
             sock.close()
+
+    @staticmethod
+    def _classify_ftp_passive_address(address: str) -> str:
+        """Classify a passive FTP endpoint address without contacting it."""
+
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return "invalid"
+
+        if parsed.is_loopback:
+            return "loopback"
+        if parsed.is_private:
+            return "private"
+        if parsed.is_link_local:
+            return "link_local"
+        if parsed.is_multicast:
+            return "multicast"
+        if parsed.is_unspecified:
+            return "unspecified"
+        if parsed.is_reserved:
+            return "reserved"
+
+        return "global"
+
+    @staticmethod
+    def _ftp_passive_address_matches_control(
+        passive_address: str,
+        control_address: str,
+    ) -> bool | None:
+        """Compare PASV endpoint and control addresses when both are valid."""
+
+        try:
+            return (
+                ipaddress.ip_address(passive_address)
+                == ipaddress.ip_address(control_address)
+            )
+        except ValueError:
+            return None
 
     @staticmethod
     def _parse_ftp_epsv(
@@ -607,6 +739,138 @@ class ProtocolProbe:
         return "unknown"
 
     @staticmethod
+    def _detect_ftp_anomalies(
+        data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Detect safe, observation-only FTP protocol inconsistencies."""
+
+        anomalies: list[dict[str, Any]] = []
+
+        commands = data.get("commands") or {}
+        features = set(data.get("features") or [])
+        passive_mode = data.get("passive_mode") or {}
+        tls_protection = data.get("tls_protection") or {}
+
+        def add(code: str, description: str, severity: str = "info") -> None:
+            anomalies.append(
+                {
+                    "code": code,
+                    "severity": severity,
+                    "description": description,
+                }
+            )
+
+        greeting_code = data.get("greeting_code")
+        if not isinstance(greeting_code, int) or not (
+            100 <= greeting_code < 600
+        ):
+            add(
+                "invalid_greeting_code",
+                "FTP greeting did not contain a standard response code.",
+                "low",
+            )
+
+        for command_name, details in commands.items():
+            if details.get("status") == "no_response":
+                add(
+                    "command_no_response",
+                    f"FTP {command_name.upper()} produced no valid response.",
+                    "low",
+                )
+
+        if "EPSV" in features:
+            epsv = commands.get("epsv")
+            if epsv is not None:
+                if epsv.get("status") == "no_response":
+                    add(
+                        "epsv_advertised_no_response",
+                        "FTP advertised EPSV but produced no valid EPSV response.",
+                        "low",
+                    )
+                elif (
+                    epsv.get("status") == "success"
+                    and not passive_mode.get("supported")
+                ):
+                    add(
+                        "epsv_response_invalid",
+                        "FTP returned a successful EPSV response without a valid passive endpoint.",
+                        "low",
+                    )
+
+        if passive_mode:
+            if passive_mode.get("supported"):
+                port = passive_mode.get("port")
+                if not isinstance(port, int) or not 1 <= port <= 65535:
+                    add(
+                        "passive_invalid_port",
+                        "FTP passive mode reported an invalid data port.",
+                        "low",
+                    )
+
+                address_scope = passive_mode.get("address_scope")
+                if address_scope in {
+                    "invalid",
+                    "unspecified",
+                    "multicast",
+                    "reserved",
+                }:
+                    add(
+                        "passive_unusual_address",
+                        "FTP passive mode reported an unusual endpoint address scope.",
+                        "low",
+                    )
+
+                if (
+                    passive_mode.get("mode") == "PASV"
+                    and passive_mode.get("address_matches_control") is False
+                ):
+                    add(
+                        "pasv_address_differs",
+                        "FTP PASV reported an address different from the control connection.",
+                        "info",
+                    )
+
+        explicit_tls = data.get("explicit_tls")
+        tls_handshake = data.get("tls_handshake")
+
+        if explicit_tls is True and tls_handshake is False:
+            add(
+                "tls_handshake_failed",
+                "FTP accepted AUTH TLS but the TLS handshake failed.",
+                "low",
+            )
+
+        if "AUTH" in features or "TLS" in features or "SSL" in features:
+            auth_tls = commands.get("auth_tls")
+            if (
+                auth_tls is not None
+                and auth_tls.get("status") == "permanent_error"
+                and explicit_tls is True
+            ):
+                add(
+                    "tls_capability_inconsistent",
+                    "FTP capability data indicated TLS support but AUTH TLS returned a permanent error.",
+                    "low",
+                )
+
+        if tls_protection:
+            data_channel = tls_protection.get("data_channel") or {}
+            prot_p = data_channel.get("prot_p") or {}
+
+            if (
+                tls_handshake is True
+                and prot_p.get("status") == "no_response"
+            ):
+                add(
+                    "tls_protection_no_response",
+                    "FTP completed the TLS handshake but PROT P produced no valid response.",
+                    "low",
+                )
+
+        return anomalies
+
+
+    @staticmethod
     def _build_ftp_session_profile(
         data: dict[str, Any],
     ) -> dict[str, Any]:
@@ -654,6 +918,8 @@ class ProtocolProbe:
                 "version": tls.get("version"),
                 "cipher": tls.get("cipher"),
             },
+            "tls_protection": data.get("tls_protection") or {},
+            "anomalies": list(data.get("anomalies") or []),
             "command_status": command_status,
         }
 
