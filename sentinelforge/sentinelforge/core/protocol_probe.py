@@ -1,5 +1,4 @@
-"""
-Shared protocol probing.
+"""Shared protocol probing.
 
 Provides structured, bounded protocol observations for services discovered
 by SentinelForge. This layer performs protocol identification and lightweight
@@ -7,6 +6,8 @@ handshakes; security-specific checks remain in their existing plugins.
 """
 
 from __future__ import annotations
+
+import re
 
 import ipaddress
 import socket
@@ -96,6 +97,14 @@ class ProtocolProbe:
                 port,
             )
 
+        if service_name == "smtp" or port in {25, 465, 587, 2525}:
+            return self._probe_smtp(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
         if service_name == "ssh" or port in {22, 2222}:
             return self._probe_ssh(
                 target,
@@ -139,6 +148,3035 @@ class ProtocolProbe:
             transport,
             f"No protocol probe is registered for service '{service}'.",
         )
+
+    def _probe_smtp(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Probe SMTP greeting and capabilities without authentication or mail I/O."""
+
+        family = (
+            socket.AF_INET6
+            if address_family.lower() in {"ipv6", "af_inet6"}
+            else socket.AF_INET
+        )
+
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(self._timeout)
+        response_buffer = bytearray()
+
+        try:
+            sock.connect((address, port))
+
+            implicit_tls = port == 465
+
+            data: dict[str, Any] = {
+                "implicit_tls": implicit_tls,
+                "greeting_code": None,
+                "greeting_lines": [],
+                "banner": "",
+                "commands": {},
+                "capabilities": [],
+                "capability_details": [],
+                "capability_groups": self._group_smtp_capabilities([]),
+                "auth": {
+                    "advertised": False,
+                    "mechanisms": [],
+                    "mechanism_classes": {},
+                },
+                "ehlo": None,
+                "helo": None,
+                "starttls": {
+                    "advertised": False,
+                    "response_code": None,
+                    "accepted": False,
+                    "handshake": implicit_tls,
+                    "tls_version": None,
+                    "cipher": None,
+                    "peer_certificate": None,
+                    "post_tls_ehlo": None,
+                    "post_tls_capabilities": [],
+                    "error": None,
+                },
+            }
+
+            evidence = []
+
+            if implicit_tls:
+                if self._config is None:
+                    return ProtocolObservation(
+                        target=target,
+                        address=address,
+                        address_family=address_family,
+                        port=port,
+                        transport="tcp",
+                        protocol="smtp",
+                        success=False,
+                        identification_method="implicit_tls_configuration_missing",
+                        confidence=0.0,
+                        timestamp=self._timestamp(),
+                        evidence=(
+                            "SMTPS requires TLS configuration.",
+                        ),
+                        error="implicit_tls_configuration_missing",
+                    )
+
+                try:
+                    context = ssl_context(self._config)
+
+                    server_hostname = (
+                        target
+                        if not ProtocolProbe._is_ip_address(target)
+                        else None
+                    )
+
+                    sock = context.wrap_socket(
+                        sock,
+                        server_hostname=server_hostname,
+                    )
+                    sock.settimeout(self._timeout)
+
+                    data["starttls"]["tls_version"] = sock.version()
+                    data["starttls"]["cipher"] = sock.cipher()
+                    data["starttls"]["tls_security"] = (
+                        self._classify_smtp_tls_security(
+                            data["starttls"]["tls_version"],
+                            data["starttls"]["cipher"],
+                        )
+                    )
+
+                    certificate = sock.getpeercert()
+                    data["starttls"]["peer_certificate"] = {
+                        "subject": certificate.get("subject"),
+                        "issuer": certificate.get("issuer"),
+                        "serial_number": certificate.get("serialNumber"),
+                        "not_before": certificate.get("notBefore"),
+                        "not_after": certificate.get("notAfter"),
+                        "subjectAltName": certificate.get(
+                            "subjectAltName"
+                        ),
+                    }
+                    data["starttls"]["certificate_analysis"] = (
+                        self._analyze_smtp_certificate(
+                            certificate,
+                            target,
+                        )
+                    )
+
+                    evidence.append(
+                        "SMTP implicit TLS handshake completed successfully."
+                    )
+
+                except (
+                    ssl.SSLError,
+                    TimeoutError,
+                    ConnectionResetError,
+                    OSError,
+                    ValueError,
+                ) as exc:
+                    data["starttls"]["handshake"] = False
+                    data["starttls"]["error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                    return ProtocolObservation(
+                        target=target,
+                        address=address,
+                        address_family=address_family,
+                        port=port,
+                        transport="tcp",
+                        protocol="smtp",
+                        success=False,
+                        identification_method="implicit_tls_failed",
+                        confidence=0.0,
+                        timestamp=self._timestamp(),
+                        data=data,
+                        evidence=(
+                            "SMTP implicit TLS handshake failed: "
+                            f"{type(exc).__name__}: {exc}",
+                        ),
+                        error=(
+                            f"implicit_tls_failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    )
+
+            greeting = self._smtp_read_response(
+                sock,
+                response_buffer,
+            )
+
+            if greeting is None:
+                return ProtocolObservation(
+                    target=target,
+                    address=address,
+                    address_family=address_family,
+                    port=port,
+                    transport="tcp",
+                    protocol="smtp",
+                    success=False,
+                    identification_method="smtp_greeting_missing",
+                    confidence=0.0,
+                    timestamp=self._timestamp(),
+                    evidence=(
+                        "SMTP server did not provide a valid greeting.",
+                    ),
+                    error="smtp_greeting_missing",
+                )
+
+            greeting_code, greeting_lines = greeting
+
+            data["greeting_code"] = greeting_code
+            data["greeting_lines"] = greeting_lines
+            data["banner"] = "\n".join(greeting_lines)
+            data["status_analysis"] = {
+                "greeting": self._analyze_smtp_response_status(
+                    greeting_code,
+                    greeting_lines,
+                )
+            }
+            data["greeting_identity"] = self._analyze_smtp_greeting(
+                greeting_code,
+                greeting_lines,
+            )
+
+            evidence.extend([
+                "SMTP protocol confirmed by server greeting.",
+                f"SMTP greeting response code: {greeting_code}",
+            ])
+
+            if greeting_lines:
+                evidence.append(
+                    f"SMTP server greeting: {greeting_lines[0]}"
+                )
+
+            if implicit_tls:
+                evidence.append(
+                    "SMTP service identified as implicit-TLS/SMTPS on port 465."
+                )
+
+            ehlo_response = self._smtp_command(
+                sock,
+                "EHLO SentinelForge",
+                response_buffer,
+            )
+
+            if ehlo_response is not None:
+                ehlo_code, ehlo_lines = ehlo_response
+
+                data["commands"]["ehlo"] = {
+                    "code": ehlo_code,
+                    "lines": ehlo_lines,
+                    "status": self._classify_smtp_response(ehlo_code),
+                    "status_analysis": self._analyze_smtp_response_status(
+                        ehlo_code, ehlo_lines
+                    ),
+                }
+
+                starttls_detail = next(
+                    (
+                        item
+                        for item in data["capability_details"]
+                        if item.get("name") == "STARTTLS"
+                    ),
+                    None,
+                )
+
+                previous_tls = data.get("starttls", {})
+
+                data["starttls"] = {
+                    "advertised": starttls_detail is not None,
+                    "response_code": None,
+                    "accepted": False,
+                    "handshake": bool(previous_tls.get("handshake")),
+                    "tls_version": previous_tls.get("tls_version"),
+                    "cipher": previous_tls.get("cipher"),
+                    "peer_certificate": previous_tls.get("peer_certificate"),
+                    "certificate_analysis": previous_tls.get(
+                        "certificate_analysis"
+                    ),
+                    "post_tls_ehlo": None,
+                    "post_tls_capabilities": [],
+                    "post_tls_capability_details": [],
+                    "error": previous_tls.get("error"),
+                }
+
+                data["ehlo"] = {
+                    "accepted": 200 <= ehlo_code < 300,
+                    "code": ehlo_code,
+                    "lines": ehlo_lines,
+                }
+
+                evidence.append(
+                    f"SMTP EHLO response code: {ehlo_code}"
+                )
+
+                if 200 <= ehlo_code < 300:
+                    capabilities = []
+                    capability_details = []
+
+                    for line in ehlo_lines:
+                        stripped = line.strip()
+
+                        if not stripped:
+                            continue
+
+                        if stripped[:3].isdigit():
+                            if len(stripped) <= 4:
+                                continue
+                            payload = stripped[4:].strip()
+                        else:
+                            payload = stripped
+
+                        if not payload:
+                            continue
+
+                        parts = payload.split(None, 1)
+                        name = parts[0].upper()
+                        arguments = (
+                            parts[1].strip()
+                            if len(parts) > 1
+                            else None
+                        )
+
+                        capabilities.append(name)
+                        capability_details.append(
+                            {
+                                "name": name,
+                                "arguments": arguments,
+                                "raw": payload,
+                            }
+                        )
+
+                    data["capabilities"] = list(
+                        dict.fromkeys(capabilities)
+                    )
+                    data["capability_details"] = capability_details
+                    data["capability_groups"] = (
+                        self._group_smtp_capabilities(
+                            data["capability_details"]
+                        )
+                    )
+                    data["auth"] = self._analyze_smtp_auth(
+                        data["capability_details"]
+                    )
+                    data["auth"]["status_analysis"] = (
+                        self._analyze_smtp_auth_status(
+                            data["auth"],
+                            tls_active=bool(
+                                data.get("starttls", {}).get("handshake")
+                            ),
+                        )
+                    )
+                    data["capability_parameters"] = (
+                        self._analyze_smtp_capability_parameters(
+                            data["capability_details"]
+                        )
+                    )
+                    data["extension_relationships"] = (
+                        self._analyze_smtp_extension_relationships(
+                            data["capabilities"],
+                            data["capability_details"],
+                        )
+                    )
+
+                    if capabilities:
+                        evidence.append(
+                            "SMTP advertised capabilities: "
+                            + ", ".join(data["capabilities"])
+                        )
+
+                        for group, values in data[
+                            "capability_groups"
+                        ].items():
+                            if values:
+                                evidence.append(
+                                    f"SMTP {group} capabilities: "
+                                    + ", ".join(values)
+                                )
+
+                    if (
+                        data["starttls"]["advertised"]
+                        and self._config is not None
+                    ):
+                        starttls_response = self._smtp_command(
+                            sock,
+                            "STARTTLS",
+                            response_buffer,
+                        )
+
+                        if starttls_response is None:
+                            data["starttls"]["error"] = (
+                                "STARTTLS produced no valid response."
+                            )
+                            evidence.append(
+                                "SMTP STARTTLS was advertised but produced "
+                                "no valid response."
+                            )
+                        else:
+                            tls_code, tls_lines = starttls_response
+                            data["starttls"]["response_code"] = tls_code
+                            data["commands"]["starttls"] = {
+                                "code": tls_code,
+                                "lines": tls_lines,
+                                "status": self._classify_smtp_response(
+                                    tls_code
+                                ),
+                                "status_analysis": (
+                                    self._analyze_smtp_response_status(
+                                        tls_code, tls_lines
+                                    )
+                                ),
+                            }
+
+                            if 200 <= tls_code < 300:
+                                data["starttls"]["accepted"] = True
+                                evidence.append(
+                                    f"SMTP STARTTLS accepted with code "
+                                    f"{tls_code}."
+                                )
+
+                                try:
+                                    context = ssl_context(self._config)
+
+                                    server_hostname = (
+                                        target
+                                        if not ProtocolProbe._is_ip_address(target)
+                                        else None
+                                    )
+
+                                    tls_sock = context.wrap_socket(
+                                        sock,
+                                        server_hostname=server_hostname,
+                                    )
+                                    sock = tls_sock
+                                    sock.settimeout(self._timeout)
+
+                                    data["starttls"]["handshake"] = True
+                                    data["starttls"]["tls_version"] = (
+                                        sock.version()
+                                    )
+                                    data["starttls"]["cipher"] = (
+                                        sock.cipher()
+                                    )
+                                    data["starttls"]["tls_security"] = (
+                                        self._classify_smtp_tls_security(
+                                            data["starttls"]["tls_version"],
+                                            data["starttls"]["cipher"],
+                                        )
+                                    )
+
+                                    certificate_der = (
+                                        sock.getpeercert(
+                                            binary_form=True
+                                        )
+                                    )
+                                    certificate = sock.getpeercert()
+
+                                    if certificate_der:
+                                        data["starttls"][
+                                            "certificate_analysis"
+                                        ] = (
+                                            self._analyze_smtp_certificate(
+                                                certificate_der,
+                                                target,
+                                            )
+                                        )
+
+                                    data["starttls"]["peer_certificate"] = {
+                                        "subject": certificate.get(
+                                            "subject"
+                                        ),
+                                        "issuer": certificate.get(
+                                            "issuer"
+                                        ),
+                                        "serial_number": certificate.get(
+                                            "serialNumber"
+                                        ),
+                                        "not_before": certificate.get(
+                                            "notBefore"
+                                        ),
+                                        "not_after": certificate.get(
+                                            "notAfter"
+                                        ),
+                                        "subjectAltName": certificate.get(
+                                            "subjectAltName"
+                                        ),
+                                    }
+
+                                    data["starttls"]["certificate_analysis"] = (
+                                        self._analyze_smtp_certificate(
+                                            certificate,
+                                            target,
+                                        )
+                                    )
+
+                                    evidence.append(
+                                        "SMTP STARTTLS TLS handshake "
+                                        "completed successfully."
+                                    )
+
+                                    post_tls_buffer = bytearray()
+
+                                    post_tls_ehlo = self._smtp_command(
+                                        sock,
+                                        "EHLO SentinelForge",
+                                        post_tls_buffer,
+                                    )
+
+                                    if post_tls_ehlo is not None:
+                                        post_code, post_lines = (
+                                            post_tls_ehlo
+                                        )
+
+                                        post_capabilities = []
+                                        post_details = []
+
+                                        if 200 <= post_code < 300:
+                                            for line in post_lines:
+                                                stripped = line.strip()
+
+                                                if not stripped:
+                                                    continue
+
+                                                if (
+                                                    stripped[:3].isdigit()
+                                                    and len(stripped) > 4
+                                                ):
+                                                    payload = stripped[
+                                                        4:
+                                                    ].strip()
+                                                else:
+                                                    payload = stripped
+
+                                                if not payload:
+                                                    continue
+
+                                                parts = payload.split(
+                                                    None,
+                                                    1,
+                                                )
+                                                name = parts[0].upper()
+                                                arguments = (
+                                                    parts[1].strip()
+                                                    if len(parts) > 1
+                                                    else None
+                                                )
+
+                                                post_capabilities.append(
+                                                    name
+                                                )
+                                                post_details.append(
+                                                    {
+                                                        "name": name,
+                                                        "arguments": arguments,
+                                                        "raw": payload,
+                                                    }
+                                                )
+
+                                        post_capabilities = list(
+                                            dict.fromkeys(
+                                                post_capabilities
+                                            )
+                                        )
+
+                                        data["starttls"][
+                                            "post_tls_ehlo"
+                                        ] = {
+                                            "code": post_code,
+                                            "lines": post_lines,
+                                            "accepted": (
+                                                200
+                                                <= post_code
+                                                < 300
+                                            ),
+                                        }
+
+                                        data["starttls"][
+                                            "post_tls_capabilities"
+                                        ] = post_capabilities
+
+                                        data["starttls"][
+                                            "post_tls_capability_details"
+                                        ] = post_details
+
+                                        data["starttls"][
+                                            "post_tls_capability_parameters"
+                                        ] = (
+                                            self._analyze_smtp_capability_parameters(
+                                                post_details
+                                            )
+                                        )
+                                        data["starttls"][
+                                            "post_tls_extension_relationships"
+                                        ] = (
+                                            self._analyze_smtp_extension_relationships(
+                                                post_capabilities,
+                                                post_details,
+                                            )
+                                        )
+
+                                        post_tls_auth = self._analyze_smtp_auth(
+                                            post_details
+                                        )
+                                        data["starttls"][
+                                            "post_tls_auth_status_analysis"
+                                        ] = self._analyze_smtp_auth_status(
+                                            post_tls_auth,
+                                            tls_active=True,
+                                        )
+
+                                        if post_capabilities:
+                                            evidence.append(
+                                                "SMTP post-TLS capabilities: "
+                                                + ", ".join(
+                                                    post_capabilities
+                                                )
+                                            )
+                                    else:
+                                        data["starttls"][
+                                            "error"
+                                        ] = (
+                                            "Post-TLS EHLO produced no "
+                                            "valid response."
+                                        )
+
+                                except (
+                                    ssl.SSLError,
+                                    TimeoutError,
+                                    ConnectionResetError,
+                                    OSError,
+                                    ValueError,
+                                ) as exc:
+                                    data["starttls"]["error"] = (
+                                        f"{type(exc).__name__}: {exc}"
+                                    )
+                                    evidence.append(
+                                        "SMTP STARTTLS TLS handshake "
+                                        f"failed: {type(exc).__name__}: "
+                                        f"{exc}"
+                                    )
+                            else:
+                                data["starttls"]["error"] = (
+                                    f"STARTTLS rejected with code "
+                                    f"{tls_code}."
+                                )
+                                evidence.append(
+                                    f"SMTP STARTTLS rejected with code "
+                                    f"{tls_code}."
+                                )
+                else:
+                    helo_response = self._smtp_command(
+                        sock,
+                        "HELO SentinelForge",
+                        response_buffer,
+                    )
+
+                    if helo_response is not None:
+                        helo_code, helo_lines = helo_response
+
+                        data["commands"]["helo"] = {
+                            "code": helo_code,
+                            "lines": helo_lines,
+                            "status": self._classify_smtp_response(
+                                helo_code
+                            ),
+                            "status_analysis": (
+                                self._analyze_smtp_response_status(
+                                    helo_code, helo_lines
+                                )
+                            ),
+                        }
+
+                        data["helo"] = {
+                            "accepted": 200 <= helo_code < 300,
+                            "code": helo_code,
+                            "lines": helo_lines,
+                        }
+
+                        evidence.append(
+                            f"SMTP HELO response code: {helo_code}"
+                        )
+                    else:
+                        data["commands"]["helo"] = {
+                            "code": None,
+                            "lines": [],
+                            "status": "no_response",
+                        }
+
+                        evidence.append(
+                            "SMTP HELO produced no valid response."
+                        )
+            else:
+                data["commands"]["ehlo"] = {
+                    "code": None,
+                    "lines": [],
+                    "status": "no_response",
+                }
+
+                evidence.append(
+                    "SMTP EHLO produced no valid response."
+                )
+
+            data["tls_capability_comparison"] = (
+                self._compare_smtp_tls_capabilities(data)
+            )
+
+            data["session_probe"] = self._probe_smtp_session_commands(
+                sock=sock,
+                response_buffer=response_buffer,
+            )
+
+            data["session_state_analysis"] = (
+                self._analyze_smtp_session_state(
+                    data["session_probe"]
+                )
+            )
+
+            for command_name, details in data["session_probe"].items():
+                status = details.get("status")
+                code = details.get("code")
+                evidence.append(
+                    f"SMTP {command_name.upper()} response: "
+                    f"{code if code is not None else status}"
+                )
+
+            data["fingerprint"] = self._build_smtp_fingerprint(
+                target=target,
+                address=address,
+                port=port,
+                data=data,
+            )
+
+            data["identity_consistency"] = (
+                self._analyze_smtp_identity_consistency(
+                    greeting_identity=data.get("greeting_identity"),
+                    ehlo=data.get("ehlo"),
+                    helo=data.get("helo"),
+                    software=data["fingerprint"].get("software", []),
+                    capabilities=data.get("capabilities", []),
+                )
+            )
+
+            data["post_tls_identity_consistency"] = (
+                self._analyze_smtp_post_tls_identity(
+                    identity_consistency=data["identity_consistency"],
+                    post_tls_ehlo=data.get("starttls", {}).get(
+                        "post_tls_ehlo"
+                    ),
+                )
+            )
+
+            data["fingerprint"]["identity"]["consistency"] = (
+                dict(data["identity_consistency"])
+            )
+
+            data["fingerprint"]["identity"]["post_tls_consistency"] = (
+                dict(data["post_tls_identity_consistency"])
+            )
+
+            data["session"] = {
+                "protocol": "smtp",
+                "greeting": {
+                    "code": greeting_code,
+                    "present": bool(greeting_lines),
+                },
+                "capabilities": {
+                    "advertised": list(data["capabilities"]),
+                    "details": list(data["capability_details"]),
+                    "groups": dict(data["capability_groups"]),
+                },
+                "command_status": {
+                    name: details.get("status")
+                    for name, details in data["commands"].items()
+                },
+                "starttls": dict(data["starttls"]),
+                "auth": dict(data["auth"]),
+            }
+
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="smtp",
+                success=True,
+                identification_method="smtp_greeting_and_ehlo_probe",
+                confidence=0.99,
+                timestamp=self._timestamp(),
+                data=data,
+                evidence=tuple(evidence),
+            )
+
+        except (TimeoutError, ConnectionResetError, OSError, ValueError) as exc:
+            return self._error_observation(
+                target,
+                address,
+                address_family,
+                port,
+                "smtp",
+                "connection_failed",
+                exc,
+            )
+        finally:
+            sock.close()
+
+    @staticmethod
+    def _analyze_smtp_session_state(
+        results: dict[str, dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Interpret harmless SMTP session-command behavior."""
+
+        results = results or {}
+
+        expected_codes = {
+            "noop": {200, 250},
+            "rset": {200, 250},
+            "help": {200, 214, 250},
+            "quit": {221},
+        }
+
+        command_analysis: dict[str, Any] = {}
+        anomalies: list[dict[str, Any]] = []
+
+        for command_name, details in results.items():
+            code = details.get("code")
+            status = details.get("status", "unknown")
+            expected = expected_codes.get(command_name, set())
+
+            if code is None:
+                semantic = "no_response"
+            elif code in expected:
+                if command_name == "noop":
+                    semantic = "session_alive"
+                elif command_name == "rset":
+                    semantic = "session_reset_accepted"
+                elif command_name == "help":
+                    semantic = "help_available"
+                elif command_name == "quit":
+                    semantic = "session_closed"
+                else:
+                    semantic = "expected_response"
+            elif 400 <= code < 500:
+                semantic = "temporary_rejection"
+            elif 500 <= code < 600:
+                semantic = "permanent_rejection"
+            else:
+                semantic = "unexpected_response"
+
+            command_analysis[command_name] = {
+                "code": code,
+                "status": status,
+                "expected_codes": sorted(expected),
+                "semantic": semantic,
+                "status_analysis": details.get("status_analysis"),
+                "enhanced_status": details.get("enhanced_status"),
+            }
+
+            if code is not None and expected and code not in expected:
+                anomalies.append(
+                    {
+                        "code": f"{command_name}_unexpected_response",
+                        "severity": "low",
+                        "confidence": 0.90,
+                        "description": (
+                            f"SMTP {command_name.upper()} returned "
+                            f"unexpected response code {code}."
+                        ),
+                        "evidence": details.get("lines", []),
+                    }
+                )
+
+            if status == "error":
+                anomalies.append(
+                    {
+                        "code": f"{command_name}_session_error",
+                        "severity": "low",
+                        "confidence": 0.95,
+                        "description": (
+                            f"SMTP {command_name.upper()} encountered "
+                            "a session-level transport or protocol error."
+                        ),
+                        "evidence": [str(details.get("error", "unknown error"))],
+                    }
+                )
+
+        if "quit" in results:
+            quit_code = results["quit"].get("code")
+            if quit_code is not None and quit_code != 221:
+                anomalies.append(
+                    {
+                        "code": "quit_did_not_close_cleanly",
+                        "severity": "low",
+                        "confidence": 0.95,
+                        "description": (
+                            "SMTP QUIT did not return the expected 221 "
+                            "service-closing response."
+                        ),
+                        "evidence": results["quit"].get("lines", []),
+                    }
+                )
+
+        return {
+            "commands": command_analysis,
+            "anomalies": anomalies,
+            "command_count": len(command_analysis),
+            "anomaly_count": len(anomalies),
+        }
+
+    def _probe_smtp_session_commands(
+        self,
+        *,
+        sock: socket.socket,
+        response_buffer: bytearray,
+    ) -> dict[str, dict[str, Any]]:
+        """Probe harmless SMTP session commands without mail or authentication."""
+
+        results: dict[str, dict[str, Any]] = {}
+
+        for command_name, command in (
+            ("noop", "NOOP"),
+            ("rset", "RSET"),
+            ("help", "HELP"),
+            ("quit", "QUIT"),
+        ):
+            try:
+                response = self._smtp_command(
+                    sock,
+                    command,
+                    response_buffer,
+                )
+
+                if response is None:
+                    results[command_name] = {
+                        "code": None,
+                        "lines": [],
+                        "status": "no_response",
+                        "status_analysis": self._analyze_smtp_response_status(
+                            None,
+                            [],
+                        ),
+                    }
+                    continue
+
+                code, lines = response
+
+                results[command_name] = {
+                    "code": code,
+                    "lines": lines,
+                    "status": self._classify_smtp_response(code),
+                    "enhanced_status": self._parse_smtp_enhanced_status(
+                        lines
+                    ),
+                    "status_analysis": self._analyze_smtp_response_status(
+                        code,
+                        lines,
+                    ),
+                }
+
+                if command_name == "quit":
+                    break
+
+            except (
+                TimeoutError,
+                ConnectionResetError,
+                BrokenPipeError,
+                OSError,
+                ValueError,
+            ) as exc:
+                results[command_name] = {
+                    "code": None,
+                    "lines": [],
+                    "status": "error",
+                    "status_analysis": self._analyze_smtp_response_status(
+                        None,
+                        [],
+                    ),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+                if command_name == "quit":
+                    break
+
+        anomalies: list[dict[str, Any]] = []
+
+        expected_codes = {
+            "noop": {200, 250},
+            "rset": {200, 250},
+            "help": {200, 214, 250},
+            "quit": {221},
+        }
+
+        for command_name, details in results.items():
+            code = details.get("code")
+
+            if code is None:
+                continue
+
+            if code not in expected_codes[command_name]:
+                anomalies.append(
+                    {
+                        "code": "unexpected_response",
+                        "severity": "low",
+                        "confidence": 0.90,
+                        "command": command_name.upper(),
+                        "description": (
+                            f"SMTP {command_name.upper()} returned "
+                            f"unexpected response code {code}."
+                        ),
+                        "evidence": list(details.get("lines", [])),
+                    }
+                )
+
+        quit_result = results.get("quit")
+
+        if quit_result is not None:
+            quit_code = quit_result.get("code")
+
+            if quit_code is not None and quit_code != 221:
+                anomalies.append(
+                    {
+                        "code": "quit_semantics",
+                        "severity": "low",
+                        "confidence": 0.95,
+                        "command": "QUIT",
+                        "description": (
+                            "SMTP QUIT did not return the expected "
+                            "221 closing response."
+                        ),
+                        "evidence": list(quit_result.get("lines", [])),
+                    }
+                )
+
+        results["_analysis"] = {
+            "commands_attempted": [
+                name.upper()
+                for name in results
+                if name != "_analysis"
+            ],
+            "quit_observed": "quit" in results,
+            "connection_close_expected": "quit" in results,
+            "anomalies": anomalies,
+        }
+
+        return results
+
+    @staticmethod
+    def _classify_smtp_tls_security(
+        tls_version: str | None,
+        cipher: tuple | None,
+    ) -> dict[str, Any]:
+        """Classify negotiated SMTP TLS version and cipher security."""
+        version_value = str(tls_version) if tls_version else None
+
+        if version_value in {"TLSv1.3", "TLSv1.2"}:
+            version_classification = "modern"
+        elif version_value in {"TLSv1.1", "TLSv1.0"}:
+            version_classification = "legacy"
+        elif version_value in {"SSLv3", "SSLv2"}:
+            version_classification = "obsolete"
+        else:
+            version_classification = "unknown"
+
+        cipher_name = None
+        cipher_protocol = None
+        cipher_bits = None
+
+        if cipher:
+            if len(cipher) >= 1:
+                cipher_name = cipher[0]
+            if len(cipher) >= 2:
+                cipher_protocol = cipher[1]
+            if len(cipher) >= 3:
+                cipher_bits = cipher[2]
+
+        cipher_name_upper = str(cipher_name or "").upper()
+
+        weak_cipher_markers = (
+            "RC4",
+            "3DES",
+            "DES-CBC",
+            "DES40",
+            "EXPORT",
+            "NULL",
+            "ANON",
+            "MD5",
+            "RC2",
+            "AES128-SHA",
+            "AES256-SHA",
+        )
+
+        if not cipher_name:
+            cipher_classification = "unknown"
+        elif any(marker in cipher_name_upper for marker in weak_cipher_markers):
+            cipher_classification = "weak"
+        elif cipher_bits is not None and cipher_bits < 128:
+            cipher_classification = "weak"
+        elif (
+            "AES" in cipher_name_upper
+            or "CHACHA20" in cipher_name_upper
+            or "ARIA" in cipher_name_upper
+            or "CAMELLIA" in cipher_name_upper
+        ) and (
+            cipher_bits is None or cipher_bits >= 128
+        ):
+            cipher_classification = "strong"
+        else:
+            cipher_classification = "unknown"
+
+        issues = []
+
+        if version_classification == "legacy":
+            issues.append("legacy_tls_version")
+        elif version_classification == "obsolete":
+            issues.append("obsolete_tls_version")
+
+        if cipher_classification == "weak":
+            issues.append("weak_cipher")
+
+        if version_classification == "unknown" or cipher_classification == "unknown":
+            issues.append("missing_tls_metadata")
+
+        if (
+            version_classification in {"legacy", "obsolete"}
+            or cipher_classification == "weak"
+        ):
+            overall = "weak"
+        elif version_classification == "modern" and cipher_classification == "strong":
+            overall = "strong"
+        else:
+            overall = "unknown"
+
+        return {
+            "version": {
+                "value": version_value,
+                "classification": version_classification,
+            },
+            "cipher": {
+                "name": cipher_name,
+                "protocol": cipher_protocol,
+                "bits": cipher_bits,
+                "classification": cipher_classification,
+            },
+            "classification": overall,
+            "issues": issues,
+        }
+
+    @staticmethod
+    def _smtp_dns_name_matches(hostname: str, pattern: str) -> bool:
+        """Match a hostname against a certificate DNS name.
+
+        Wildcards are restricted to a complete leftmost label and match
+        exactly one DNS label.
+        """
+        if not isinstance(hostname, str) or not isinstance(pattern, str):
+            return False
+
+        hostname = hostname.strip().rstrip(".").lower()
+        pattern = pattern.strip().rstrip(".").lower()
+
+        if not hostname or not pattern:
+            return False
+
+        if "*" not in pattern:
+            return hostname == pattern
+
+        labels = pattern.split(".")
+
+        if labels[0] != "*":
+            return False
+
+        if any("*" in label for label in labels[1:]):
+            return False
+
+        hostname_labels = hostname.split(".")
+
+        if len(hostname_labels) != len(labels):
+            return False
+
+        return hostname_labels[1:] == labels[1:]
+
+    @staticmethod
+    def _analyze_smtp_certificate(
+        certificate: dict[str, Any] | bytes,
+        target: str | None = None,
+    ) -> dict[str, Any]:
+        """Analyze SMTP TLS certificate identity, validity, and security metadata."""
+        if not certificate:
+            return {
+                "present": False,
+                "subject": None,
+                "issuer": None,
+                "serial_number": None,
+                "not_before": None,
+                "not_after": None,
+                "san": [],
+                "hostname_state": "unknown",
+                "self_signed": False,
+                "validity": {
+                    "state": "unknown",
+                    "not_before": None,
+                    "not_after": None,
+                },
+                "security": {
+                    "version": None,
+                    "signature_algorithm": None,
+                    "public_key_algorithm": None,
+                    "public_key_bits": None,
+                },
+            }
+
+        from email.utils import parsedate_to_datetime
+
+        if isinstance(certificate, bytes):
+            from cryptography import x509
+
+            parsed_certificate = x509.load_der_x509_certificate(certificate)
+
+            san = []
+            try:
+                san_extension = (
+                    parsed_certificate.extensions.get_extension_for_class(
+                        x509.SubjectAlternativeName
+                    )
+                )
+                for name in san_extension.value:
+                    if isinstance(name, x509.DNSName):
+                        san.append(name.value)
+                    elif isinstance(name, x509.IPAddress):
+                        san.append(str(name.value))
+            except x509.ExtensionNotFound:
+                pass
+
+            public_key = parsed_certificate.public_key()
+            public_key_algorithm = type(public_key).__name__.replace(
+                "PublicKey", ""
+            )
+            public_key_bits = getattr(public_key, "key_size", None)
+
+            signature_algorithm = (
+                parsed_certificate.signature_hash_algorithm.name
+                if parsed_certificate.signature_hash_algorithm is not None
+                else None
+            )
+
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+
+            if now < parsed_certificate.not_valid_before_utc:
+                validity_state = "not_yet_valid"
+            elif now > parsed_certificate.not_valid_after_utc:
+                validity_state = "expired"
+            else:
+                validity_state = "currently_valid"
+
+            return {
+                "present": True,
+                "subject": parsed_certificate.subject.rfc4514_string(),
+                "issuer": parsed_certificate.issuer.rfc4514_string(),
+                "serial_number": str(parsed_certificate.serial_number),
+                "not_before": parsed_certificate.not_valid_before_utc.isoformat(),
+                "not_after": parsed_certificate.not_valid_after_utc.isoformat(),
+                "san": san,
+                "hostname_state": "unknown",
+                "self_signed": (
+                    parsed_certificate.subject
+                    == parsed_certificate.issuer
+                ),
+                "validity": {
+                    "state": validity_state,
+                    "not_before": parsed_certificate.not_valid_before_utc.isoformat(),
+                    "not_after": parsed_certificate.not_valid_after_utc.isoformat(),
+                },
+                "security": {
+                    "version": parsed_certificate.version.value + 1,
+                    "signature_algorithm": signature_algorithm,
+                    "public_key_algorithm": public_key_algorithm,
+                    "public_key_bits": public_key_bits,
+                },
+                "fingerprint_sha256": (
+                    parsed_certificate.fingerprint(
+                        hashes.SHA256()
+                    ).hex()
+                ),
+            }
+
+        san = []
+        for entry in certificate.get("subjectAltName") or ():
+            if len(entry) >= 2 and entry[0] in {"DNS", "IP Address"}:
+                san.append(str(entry[1]))
+
+        subject = certificate.get("subject")
+        issuer = certificate.get("issuer")
+
+        validity_state = "unknown"
+        not_before = certificate.get("notBefore")
+        not_after = certificate.get("notAfter")
+
+        try:
+            now = __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            )
+
+            before = parsedate_to_datetime(not_before) if not_before else None
+            after = parsedate_to_datetime(not_after) if not_after else None
+
+            if before is not None and after is not None:
+                if before.tzinfo is None:
+                    before = before.replace(
+                        tzinfo=__import__("datetime").timezone.utc
+                    )
+                if after.tzinfo is None:
+                    after = after.replace(
+                        tzinfo=__import__("datetime").timezone.utc
+                    )
+
+                if now < before:
+                    validity_state = "not_yet_valid"
+                elif now > after:
+                    validity_state = "expired"
+                else:
+                    validity_state = "currently_valid"
+        except (TypeError, ValueError, OverflowError):
+            validity_state = "unknown"
+
+        return {
+            "present": True,
+            "subject": subject,
+            "issuer": issuer,
+            "serial_number": certificate.get("serialNumber"),
+            "not_before": not_before,
+            "not_after": not_after,
+            "san": san,
+            "hostname_state": (
+                "unknown"
+                if not target or not san
+                else (
+                    "verified"
+                    if any(
+                        (
+                            ProtocolProbe._smtp_dns_name_matches(target, str(name))
+                            if str(name).strip()
+                            else False
+                        )
+                        for name in san
+                        if not ProtocolProbe._is_ip_address(target)
+                        and not ProtocolProbe._is_ip_address(str(name))
+                    )
+                    or any(
+                        str(name).strip() == target.strip()
+                        for name in san
+                        if ProtocolProbe._is_ip_address(target)
+                        and ProtocolProbe._is_ip_address(str(name))
+                    )
+                    else "mismatch"
+                )
+            ),
+            "self_signed": bool(subject and issuer and subject == issuer),
+            "validity": {
+                "state": validity_state,
+                "not_before": not_before,
+                "not_after": not_after,
+            },
+            "security": {
+                "version": certificate.get("version"),
+                "signature_algorithm": certificate.get("signatureAlgorithm"),
+                "public_key_algorithm": certificate.get("publicKeyAlgorithm"),
+                "public_key_bits": certificate.get("publicKeyBits"),
+            },
+        }
+
+    @staticmethod
+    def _compare_smtp_tls_capabilities(
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compare SMTP capabilities and AUTH mechanisms before and after TLS."""
+
+        pre_tls = {
+            str(item).upper()
+            for item in data.get("capabilities", [])
+            if item
+        }
+
+        starttls = data.get("starttls", {})
+        post_tls = {
+            str(item).upper()
+            for item in starttls.get(
+                "post_tls_capabilities",
+                [],
+            )
+            if item
+        }
+
+        pre_auth = data.get("auth", {})
+        pre_mechanisms = {
+            str(item).upper()
+            for item in pre_auth.get("mechanisms", [])
+            if item
+        }
+
+        post_mechanisms: set[str] = set()
+
+        for item in starttls.get(
+            "post_tls_capability_details",
+            [],
+        ):
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name", "")).upper()
+            arguments = str(item.get("arguments") or "")
+
+            if name == "AUTH":
+                post_mechanisms.update(
+                    part.upper()
+                    for part in arguments.split()
+                    if part
+                )
+
+        added = sorted(post_tls - pre_tls)
+        removed = sorted(pre_tls - post_tls)
+        auth_added = sorted(post_mechanisms - pre_mechanisms)
+        auth_removed = sorted(pre_mechanisms - post_mechanisms)
+
+        anomalies: list[dict[str, Any]] = []
+
+        if starttls.get("handshake") and not post_tls:
+            anomalies.append(
+                {
+                    "code": "missing_post_tls_capabilities",
+                    "severity": "low",
+                    "confidence": 0.90,
+                    "description": (
+                        "SMTP STARTTLS completed but no post-TLS "
+                        "capabilities were observed."
+                    ),
+                }
+            )
+
+        if auth_added:
+            anomalies.append(
+                {
+                    "code": "auth_enabled_after_tls",
+                    "severity": "info",
+                    "confidence": 0.95,
+                    "description": (
+                        "SMTP AUTH mechanisms became available "
+                        "after TLS negotiation."
+                    ),
+                    "mechanisms": auth_added,
+                }
+            )
+
+        if auth_removed:
+            anomalies.append(
+                {
+                    "code": "auth_changed_after_tls",
+                    "severity": "low",
+                    "confidence": 0.95,
+                    "description": (
+                        "SMTP AUTH mechanisms changed after TLS negotiation."
+                    ),
+                    "removed": auth_removed,
+                }
+            )
+
+        return {
+            "pre_tls_capabilities": sorted(pre_tls),
+            "post_tls_capabilities": sorted(post_tls),
+            "capabilities_added_after_tls": added,
+            "capabilities_removed_after_tls": removed,
+            "pre_tls_auth_mechanisms": sorted(pre_mechanisms),
+            "post_tls_auth_mechanisms": sorted(post_mechanisms),
+            "auth_added_after_tls": auth_added,
+            "auth_removed_after_tls": auth_removed,
+            "changed": bool(
+                added
+                or removed
+                or auth_added
+                or auth_removed
+            ),
+            "anomalies": anomalies,
+        }
+
+    @staticmethod
+    def _analyze_smtp_identity_consistency(
+        *,
+        greeting_identity: dict[str, Any] | None,
+        ehlo: dict[str, Any] | None,
+        helo: dict[str, Any] | None,
+        software: list[dict[str, str]] | None = None,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Correlate SMTP server identity across greeting and EHLO/HELO."""
+
+        greeting_identity = greeting_identity or {}
+        ehlo = ehlo or {}
+        helo = helo or {}
+        software = list(software or [])
+        capabilities = [
+            str(item).upper()
+            for item in (capabilities or [])
+        ]
+
+        greeting_hostname = greeting_identity.get("hostname")
+
+        def response_hostname(response: dict[str, Any]) -> str | None:
+            for line in response.get("lines", []) or []:
+                match = re.match(
+                    r"^\s*\d{3}[ -]+([^\s]+)",
+                    str(line),
+                )
+                if match:
+                    candidate = match.group(1).strip().rstrip(".")
+                    if (
+                        "." in candidate
+                        or candidate.lower() == "localhost"
+                    ):
+                        return candidate
+            return None
+
+        ehlo_hostname = response_hostname(ehlo)
+        helo_hostname = response_hostname(helo)
+
+        accepted_ehlo = bool(ehlo.get("accepted"))
+        accepted_helo = bool(helo.get("accepted"))
+
+        if accepted_ehlo:
+            dialect = "esmtp"
+        elif accepted_helo:
+            dialect = "smtp"
+        else:
+            dialect = "unknown"
+
+        anomalies: list[dict[str, Any]] = []
+
+        if (
+            greeting_hostname
+            and ehlo_hostname
+            and greeting_hostname.lower() != ehlo_hostname.lower()
+        ):
+            anomalies.append(
+                {
+                    "code": "greeting_ehlo_hostname_mismatch",
+                    "severity": "low",
+                    "confidence": 0.85,
+                    "description": (
+                        "SMTP greeting hostname differs from the hostname "
+                        "presented in the EHLO response."
+                    ),
+                    "evidence": [
+                        f"Greeting hostname: {greeting_hostname}",
+                        f"EHLO hostname: {ehlo_hostname}",
+                    ],
+                }
+            )
+
+        if accepted_ehlo and not capabilities:
+            anomalies.append(
+                {
+                    "code": "esmtp_without_capabilities",
+                    "severity": "low",
+                    "confidence": 0.80,
+                    "description": (
+                        "EHLO was accepted but no SMTP extensions were "
+                        "observed in the response."
+                    ),
+                    "evidence": [],
+                }
+            )
+
+        product_clues = {
+            str(item).lower()
+            for item in greeting_identity.get("product_clues", [])
+        }
+
+        detected_products = {
+            str(item.get("product", "")).lower()
+            for item in software
+            if item.get("product")
+        }
+
+        product_matches = bool(
+            product_clues.intersection(detected_products)
+        )
+
+        if product_clues and detected_products and not product_matches:
+            anomalies.append(
+                {
+                    "code": "greeting_software_identity_mismatch",
+                    "severity": "low",
+                    "confidence": 0.75,
+                    "description": (
+                        "Software clues in the SMTP greeting do not match "
+                        "the detected SMTP software fingerprint."
+                    ),
+                    "evidence": [
+                        f"Greeting clues: {sorted(product_clues)}",
+                        f"Detected software: {sorted(detected_products)}",
+                    ],
+                }
+            )
+
+        return {
+            "dialect": dialect,
+            "greeting_hostname": greeting_hostname,
+            "ehlo_hostname": ehlo_hostname,
+            "helo_hostname": helo_hostname,
+            "ehlo_accepted": accepted_ehlo,
+            "helo_accepted": accepted_helo,
+            "product_clues": sorted(product_clues),
+            "detected_products": sorted(detected_products),
+            "product_identity_consistent": (
+                product_matches
+                if product_clues and detected_products
+                else None
+            ),
+            "hostname_identity_consistent": (
+                greeting_hostname.lower() == (
+                    ehlo_hostname if accepted_ehlo else helo_hostname
+                ).lower()
+                if greeting_hostname
+                and (ehlo_hostname if accepted_ehlo else helo_hostname)
+                else None
+            ),
+            "anomalies": anomalies,
+            "anomaly_count": len(anomalies),
+        }
+
+    @staticmethod
+    def _analyze_smtp_post_tls_identity(
+        *,
+        identity_consistency: dict[str, Any] | None,
+        post_tls_ehlo: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Correlate SMTP identity before and after STARTTLS."""
+
+        identity_consistency = identity_consistency or {}
+        post_tls_ehlo = post_tls_ehlo or {}
+
+        pre_tls_hostname = (
+            identity_consistency.get("ehlo_hostname")
+            or identity_consistency.get("helo_hostname")
+        )
+
+        post_tls_hostname = None
+
+        for line in post_tls_ehlo.get("lines", []) or []:
+            match = re.match(
+                r"^\s*\d{3}[ -]+([^\s]+)",
+                str(line),
+            )
+            if match:
+                candidate = match.group(1).strip().rstrip(".")
+                if (
+                    "." in candidate
+                    or candidate.lower() == "localhost"
+                ):
+                    post_tls_hostname = candidate
+                    break
+
+        post_tls_accepted = bool(post_tls_ehlo.get("accepted"))
+
+        anomalies: list[dict[str, Any]] = []
+
+        if (
+            pre_tls_hostname
+            and post_tls_hostname
+            and pre_tls_hostname.lower() != post_tls_hostname.lower()
+        ):
+            anomalies.append(
+                {
+                    "code": "smtp_post_tls_hostname_mismatch",
+                    "severity": "low",
+                    "confidence": 0.90,
+                    "description": (
+                        "SMTP server presented a different hostname "
+                        "after STARTTLS than before TLS negotiation."
+                    ),
+                    "evidence": [
+                        f"Pre-TLS hostname: {pre_tls_hostname}",
+                        f"Post-TLS hostname: {post_tls_hostname}",
+                    ],
+                }
+            )
+
+        if post_tls_ehlo and not post_tls_accepted:
+            anomalies.append(
+                {
+                    "code": "smtp_post_tls_ehlo_rejected",
+                    "severity": "low",
+                    "confidence": 0.95,
+                    "description": (
+                        "SMTP server rejected the EHLO command after "
+                        "successful TLS negotiation."
+                    ),
+                    "evidence": list(
+                        post_tls_ehlo.get("lines", []) or []
+                    ),
+                }
+            )
+
+        return {
+            "pre_tls_hostname": pre_tls_hostname,
+            "post_tls_hostname": post_tls_hostname,
+            "post_tls_ehlo_accepted": post_tls_accepted,
+            "hostname_identity_consistent": (
+                pre_tls_hostname.lower() == post_tls_hostname.lower()
+                if pre_tls_hostname and post_tls_hostname
+                else None
+            ),
+            "anomalies": anomalies,
+            "anomaly_count": len(anomalies),
+        }
+
+    @staticmethod
+    def _build_smtp_fingerprint(
+        *,
+        target: str,
+        address: str,
+        port: int,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a composite SMTP fingerprint strictly from observed evidence."""
+
+        capabilities = [
+            str(item).upper()
+            for item in data.get("capabilities", [])
+        ]
+
+        capability_details = data.get("capability_details", [])
+        auth = data.get("auth", {})
+        starttls = data.get("starttls", {})
+
+        greeting_lines = data.get("greeting_lines", [])
+        banner = data.get("banner", "")
+
+        products: list[dict[str, str]] = []
+
+        version_patterns = {
+            "Postfix": re.compile(
+                r"\bPostfix(?:\s+SMTP)?\b.*?\b([0-9]+(?:\.[0-9]+)+)\b",
+                re.IGNORECASE,
+            ),
+            "Exim": re.compile(
+                r"\bExim\s+(?:ESMTP\s+)?([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+            "Sendmail": re.compile(
+                r"\bSendmail(?:\s+version)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+            "OpenSMTPD": re.compile(
+                r"\bOpenSMTPD(?:\s+ESMTP)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+            "Haraka": re.compile(
+                r"\bHaraka(?:\s+ESMTP)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+            "qmail": re.compile(
+                r"\bqmail(?:-smtpd)?[^0-9]*([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        }
+
+        for product, pattern in version_patterns.items():
+            match = pattern.search(banner)
+            if match:
+                products.append(
+                    {
+                        "product": product,
+                        "version": match.group(1),
+                        "source": "smtp_banner",
+                    }
+                )
+
+        tls_state = "not_advertised"
+
+        if starttls.get("advertised"):
+            if starttls.get("handshake"):
+                tls_state = "starttls_success"
+            elif starttls.get("accepted"):
+                tls_state = "starttls_accepted_handshake_failed"
+            elif starttls.get("response_code") is not None:
+                tls_state = "starttls_rejected"
+            else:
+                tls_state = "starttls_advertised"
+
+        if data.get("implicit_tls"):
+            tls_state = (
+                "implicit_tls_success"
+                if starttls.get("handshake")
+                else "implicit_tls_failed"
+            )
+
+        capability_set = set(capabilities)
+
+        transport_features = [
+            name
+            for name in (
+                "PIPELINING",
+                "CHUNKING",
+                "BINARYMIME",
+                "8BITMIME",
+            )
+            if name in capability_set
+        ]
+
+        delivery_features = [
+            name
+            for name in (
+                "DSN",
+                "ETRN",
+                "ATRN",
+                "VERP",
+                "XVERP",
+                "XEXPS",
+            )
+            if name in capability_set
+        ]
+
+        internationalization = [
+            name
+            for name in (
+                "SMTPUTF8",
+                "8BITMIME",
+            )
+            if name in capability_set
+        ]
+
+        post_tls_capabilities = [
+            str(item).upper()
+            for item in starttls.get("post_tls_capabilities", [])
+        ]
+
+        fingerprint = {
+            "protocol": "smtp",
+            "target": target,
+            "address": address,
+            "port": port,
+            "implicit_tls": bool(data.get("implicit_tls")),
+            "software": products,
+            "greeting": {
+                "code": data.get("greeting_code"),
+                "lines": list(greeting_lines),
+                "banner_present": bool(banner),
+            },
+            "ehlo": {
+                "accepted": bool(
+                    data.get("ehlo", {}).get("accepted")
+                ),
+                "code": data.get("ehlo", {}).get("code"),
+            },
+            "capabilities": {
+                "count": len(capabilities),
+                "names": capabilities,
+                "groups": dict(data.get("capability_groups", {})),
+            },
+            "authentication": {
+                "advertised": bool(auth.get("advertised")),
+                "mechanisms": list(auth.get("mechanisms", [])),
+                "classes": dict(auth.get("mechanism_classes", {})),
+            },
+            "tls": {
+                "state": tls_state,
+                "starttls_advertised": bool(
+                    starttls.get("advertised")
+                ),
+                "handshake": bool(starttls.get("handshake")),
+                "version": starttls.get("tls_version"),
+                "cipher": starttls.get("cipher"),
+                "post_tls_capabilities": post_tls_capabilities,
+            },
+            "features": {
+                "transport": transport_features,
+                "delivery": delivery_features,
+                "internationalization": internationalization,
+                "size": "SIZE" in capability_set,
+                "pipelining": "PIPELINING" in capability_set,
+            },
+            "identity": {
+                "software_identified": bool(products),
+                "capability_count": len(capabilities),
+                "auth_mechanism_count": len(
+                    auth.get("mechanisms", [])
+                ),
+                "tls_state": tls_state,
+            },
+            "confidence": (
+                0.95
+                if products
+                else 0.85
+                if capabilities
+                else 0.70
+            ),
+            "evidence": [
+                "Composite SMTP fingerprint derived from observed "
+                "greeting, EHLO capabilities, authentication metadata, "
+                "and TLS state."
+            ],
+        }
+
+        if capability_details:
+            fingerprint["evidence"].append(
+                f"Observed {len(capability_details)} SMTP capability entries."
+            )
+
+        if auth.get("mechanisms"):
+            fingerprint["evidence"].append(
+                "Observed advertised SMTP AUTH mechanisms: "
+                + ", ".join(auth["mechanisms"])
+            )
+
+        if tls_state != "not_advertised":
+            fingerprint["evidence"].append(
+                f"Observed SMTP TLS state: {tls_state}."
+            )
+
+        fingerprint["anomalies"] = ProtocolProbe._detect_smtp_anomalies(
+                data=data,
+                fingerprint=fingerprint,
+            )
+
+        return fingerprint
+
+
+    @staticmethod
+    def _detect_smtp_anomalies(
+        *,
+        data: dict[str, Any],
+        fingerprint: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Detect evidence-backed SMTP protocol inconsistencies."""
+
+        anomalies: list[dict[str, Any]] = []
+
+        def add(
+            code: str,
+            severity: str,
+            confidence: float,
+            description: str,
+            evidence: list[str],
+        ) -> None:
+            anomalies.append(
+                {
+                    "code": code,
+                    "severity": severity,
+                    "confidence": confidence,
+                    "description": description,
+                    "evidence": evidence,
+                }
+            )
+
+        greeting_code = data.get("greeting_code")
+        if greeting_code is not None and not 200 <= greeting_code < 400:
+            add(
+                "unexpected_greeting_code",
+                "medium",
+                0.90,
+                "SMTP greeting used an unexpected response class.",
+                [f"Observed greeting response code: {greeting_code}"],
+            )
+
+        ehlo = data.get("ehlo") or {}
+        helo = data.get("helo") or {}
+        commands = data.get("commands") or {}
+        starttls = data.get("starttls") or {}
+        auth = data.get("auth") or {}
+
+        if not ehlo.get("accepted") and helo.get("accepted"):
+            add(
+                "ehlo_rejected_helo_accepted",
+                "low",
+                0.95,
+                "Server rejected EHLO but accepted HELO.",
+                [
+                    f"EHLO response: {ehlo.get('code')}",
+                    f"HELO response: {helo.get('code')}",
+                ],
+            )
+
+        if (
+            starttls.get("advertised")
+            and starttls.get("response_code") is not None
+            and not starttls.get("accepted")
+        ):
+            add(
+                "starttls_advertised_but_rejected",
+                "medium",
+                0.95,
+                "Server advertised STARTTLS but rejected the STARTTLS command.",
+                [
+                    f"STARTTLS response code: "
+                    f"{starttls.get('response_code')}",
+                    f"STARTTLS error: {starttls.get('error')}",
+                ],
+            )
+
+        if starttls.get("accepted") and not starttls.get("handshake"):
+            add(
+                "starttls_handshake_failed",
+                "high",
+                0.95,
+                "Server accepted STARTTLS but the TLS handshake failed.",
+                [
+                    f"STARTTLS response code: "
+                    f"{starttls.get('response_code')}",
+                    f"TLS error: {starttls.get('error')}",
+                ],
+            )
+
+        if (
+            starttls.get("handshake")
+            and not starttls.get("tls_version")
+        ):
+            add(
+                "tls_handshake_missing_metadata",
+                "medium",
+                0.90,
+                "TLS handshake was reported successful but TLS version metadata was unavailable.",
+                ["STARTTLS handshake was marked successful."],
+            )
+
+        if auth.get("advertised") and not auth.get("mechanisms"):
+            add(
+                "auth_without_mechanisms",
+                "medium",
+                0.95,
+                "SMTP advertised AUTH but no authentication mechanism was parsed.",
+                ["AUTH capability was present without usable mechanism data."],
+            )
+
+        cleartext_auth = set(
+            (auth.get("mechanism_classes") or {}).get(
+                "cleartext",
+                [],
+            )
+        )
+
+        if cleartext_auth and not starttls.get("handshake") and not data.get(
+            "implicit_tls"
+        ):
+            add(
+                "cleartext_auth_without_tls",
+                "medium",
+                0.90,
+                "Cleartext-capable SMTP AUTH mechanisms were advertised without an observed TLS session.",
+                [
+                    "Advertised mechanisms: "
+                    + ", ".join(sorted(cleartext_auth)),
+                    "No successful STARTTLS or implicit TLS handshake was observed.",
+                ],
+            )
+
+        capabilities = set(
+            str(item).upper()
+            for item in data.get("capabilities", [])
+        )
+
+        if "CHUNKING" in capabilities and "PIPELINING" not in capabilities:
+            add(
+                "chunking_without_pipelining",
+                "low",
+                0.80,
+                "CHUNKING was advertised without PIPELINING.",
+                ["Observed CHUNKING capability."],
+            )
+
+        post_tls = set(
+            str(item).upper()
+            for item in starttls.get("post_tls_capabilities", [])
+        )
+
+        if starttls.get("handshake") and not post_tls:
+            add(
+                "post_tls_capabilities_missing",
+                "low",
+                0.85,
+                "TLS handshake succeeded but the server did not provide post-TLS EHLO capabilities.",
+                ["Post-TLS EHLO produced no parsed capabilities."],
+            )
+
+        if starttls.get("handshake"):
+            pre_tls_auth = set(
+                auth.get("mechanisms", [])
+            )
+            post_tls_auth = {
+                part.strip().upper()
+                for item in post_tls
+                if item.startswith("AUTH ")
+                for part in item[5:].split()
+            }
+
+            if pre_tls_auth and post_tls_auth and not post_tls_auth.issuperset(
+                pre_tls_auth
+            ):
+                add(
+                    "auth_capabilities_changed_after_tls",
+                    "low",
+                    0.85,
+                    "Advertised AUTH mechanisms changed after TLS negotiation.",
+                    [
+                        "Pre-TLS AUTH: "
+                        + ", ".join(sorted(pre_tls_auth)),
+                        "Post-TLS AUTH: "
+                        + ", ".join(sorted(post_tls_auth)),
+                    ],
+                )
+
+        if data.get("implicit_tls") and starttls.get("advertised"):
+            add(
+                "implicit_tls_also_advertises_starttls",
+                "low",
+                0.80,
+                "An implicit-TLS SMTP service also advertised STARTTLS.",
+                [
+                    "Service was probed as implicit TLS.",
+                    "STARTTLS appeared in advertised capabilities.",
+                ],
+            )
+
+        return anomalies
+
+
+    @staticmethod
+    def _is_ip_address(value: str) -> bool:
+        """Return whether a value is an IPv4 or IPv6 address."""
+
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+
+    @staticmethod
+    def _analyze_smtp_extension_relationships(
+        capabilities: list[str] | None,
+        capability_details: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Interpret relationships and consistency between SMTP extensions."""
+
+        capability_set = {
+            str(item).strip().upper()
+            for item in (capabilities or [])
+            if str(item).strip()
+        }
+
+        details = capability_details or []
+        detail_map = {
+            str(item.get("name", "")).strip().upper(): item
+            for item in details
+            if str(item.get("name", "")).strip()
+        }
+
+        relationships: list[dict[str, Any]] = []
+        anomalies: list[dict[str, Any]] = []
+
+        def add_relationship(
+            name: str,
+            extensions: list[str],
+            interpretation: str,
+        ) -> None:
+            present = [
+                extension
+                for extension in extensions
+                if extension in capability_set
+            ]
+            if present:
+                relationships.append(
+                    {
+                        "name": name,
+                        "extensions": present,
+                        "interpretation": interpretation,
+                    }
+                )
+
+        add_relationship(
+            "message_chunking",
+            ["CHUNKING", "BINARYMIME"],
+            "Server supports BDAT-style message transfer and binary MIME data.",
+        )
+
+        add_relationship(
+            "eight_bit_transport",
+            ["8BITMIME"],
+            "Server advertises transport support for 8-bit MIME content.",
+        )
+
+        add_relationship(
+            "delivery_status",
+            ["DSN"],
+            "Server advertises delivery-status notification support.",
+        )
+
+        add_relationship(
+            "internationalized_smtp",
+            ["SMTPUTF8"],
+            "Server advertises internationalized SMTP support.",
+        )
+
+        add_relationship(
+            "transport_pipelining",
+            ["PIPELINING"],
+            "Server permits SMTP command pipelining.",
+        )
+
+        add_relationship(
+            "transport_security",
+            ["STARTTLS", "REQUIRETLS"],
+            "Server advertises TLS negotiation and/or TLS-required message handling.",
+        )
+
+        add_relationship(
+            "message_size_control",
+            ["SIZE"],
+            "Server advertises a maximum message-size policy.",
+        )
+
+        add_relationship(
+            "queue_management",
+            ["ETRN", "ATRN"],
+            "Server advertises remote queue-management or retrieval extensions.",
+        )
+
+        add_relationship(
+            "delivery_timing",
+            ["DELIVERBY"],
+            "Server advertises delivery-time constraints.",
+        )
+
+        add_relationship(
+            "message_priority",
+            ["MT-PRIORITY"],
+            "Server advertises message-priority handling.",
+        )
+
+        # Consistency checks.
+        if "BINARYMIME" in capability_set and "CHUNKING" not in capability_set:
+            anomalies.append(
+                {
+                    "code": "binarymime_without_chunking",
+                    "severity": "low",
+                    "confidence": 0.85,
+                    "description": (
+                        "BINARYMIME is advertised without CHUNKING; "
+                        "the advertised extension set is unusual."
+                    ),
+                    "evidence": ["BINARYMIME"],
+                }
+            )
+
+        if "REQUIRETLS" in capability_set and "STARTTLS" not in capability_set:
+            anomalies.append(
+                {
+                    "code": "requiretls_without_starttls",
+                    "severity": "medium",
+                    "confidence": 0.90,
+                    "description": (
+                        "REQUIRETLS is advertised without STARTTLS; "
+                        "TLS-required message handling may depend on "
+                        "an already-secured transport or downstream handling."
+                    ),
+                    "evidence": ["REQUIRETLS"],
+                }
+            )
+
+        if "SMTPUTF8" in capability_set and "8BITMIME" not in capability_set:
+            anomalies.append(
+                {
+                    "code": "smtputf8_without_8bitmime",
+                    "severity": "low",
+                    "confidence": 0.80,
+                    "description": (
+                        "SMTPUTF8 is advertised without 8BITMIME; "
+                        "the combination is unusual and should be preserved "
+                        "for protocol-level review."
+                    ),
+                    "evidence": ["SMTPUTF8"],
+                }
+            )
+
+        size_detail = detail_map.get("SIZE")
+        if "SIZE" in capability_set:
+            raw = size_detail.get("argument") if size_detail else None
+            if raw is not None:
+                try:
+                    maximum = int(str(raw).strip())
+                    if maximum < 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    anomalies.append(
+                        {
+                            "code": "invalid_size_parameter",
+                            "severity": "medium",
+                            "confidence": 0.95,
+                            "description": (
+                                "SMTP SIZE capability contains an invalid "
+                                "numeric parameter."
+                            ),
+                            "evidence": [str(raw)],
+                        }
+                    )
+
+        return {
+            "capabilities": sorted(capability_set),
+            "relationships": relationships,
+            "anomalies": anomalies,
+            "relationship_count": len(relationships),
+            "anomaly_count": len(anomalies),
+        }
+
+    @staticmethod
+    def _analyze_smtp_auth_status(
+        auth: dict[str, Any] | None,
+        *,
+        tls_active: bool = False,
+    ) -> dict[str, Any]:
+        """Interpret advertised SMTP AUTH mechanisms without authenticating."""
+
+        auth = auth or {}
+        mechanisms = [
+            str(item).upper()
+            for item in auth.get("mechanisms", [])
+            if str(item).strip()
+        ]
+
+        cleartext = {"PLAIN", "LOGIN"}
+        challenge_response = {
+            "CRAM-MD5",
+            "DIGEST-MD5",
+            "SCRAM-SHA-1",
+            "SCRAM-SHA-256",
+            "SCRAM-SHA-512",
+        }
+        strong = {
+            "SCRAM-SHA-256",
+            "SCRAM-SHA-512",
+        }
+        legacy = {
+            "NTLM",
+            "GSSAPI",
+            "XOAUTH",
+            "XOAUTH2",
+        }
+
+        cleartext_mechanisms = sorted(set(mechanisms) & cleartext)
+        challenge_mechanisms = sorted(set(mechanisms) & challenge_response)
+        strong_mechanisms = sorted(set(mechanisms) & strong)
+        legacy_mechanisms = sorted(set(mechanisms) & legacy)
+
+        if not mechanisms:
+            semantic = "not_advertised"
+        elif cleartext_mechanisms and not tls_active:
+            semantic = "cleartext_auth_without_tls"
+        elif strong_mechanisms:
+            semantic = "strong_auth_available"
+        elif challenge_mechanisms:
+            semantic = "challenge_response_auth_available"
+        elif legacy_mechanisms:
+            semantic = "legacy_auth_available"
+        else:
+            semantic = "auth_available"
+
+        return {
+            "advertised": bool(mechanisms),
+            "mechanisms": mechanisms,
+            "cleartext_mechanisms": cleartext_mechanisms,
+            "challenge_response_mechanisms": challenge_mechanisms,
+            "strong_mechanisms": strong_mechanisms,
+            "legacy_mechanisms": legacy_mechanisms,
+            "tls_active": bool(tls_active),
+            "semantics": semantic,
+        }
+
+    @staticmethod
+    def _analyze_smtp_capability_parameters(
+        capability_details: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Normalize structured parameters from advertised SMTP extensions."""
+
+        result: dict[str, Any] = {
+            "size": {
+                "advertised": False,
+                "maximum": None,
+                "valid": False,
+                "raw": None,
+            },
+            "auth": {
+                "advertised": False,
+                "mechanisms": [],
+                "raw": None,
+            },
+            "extensions_with_arguments": [],
+            "known": {},
+            "unknown_parameters": [],
+        }
+
+        known_parameter_extensions = {
+            "DSN",
+            "ETRN",
+            "ATRN",
+            "DELIVERBY",
+            "MT-PRIORITY",
+            "REQUIRETLS",
+        }
+
+        for detail in capability_details:
+            name = str(detail.get("name") or "").upper()
+            arguments = detail.get("arguments")
+
+            if not name:
+                continue
+
+            raw_entry = {
+                "name": name,
+                "arguments": str(arguments) if arguments is not None else None,
+                "raw": detail.get("raw"),
+            }
+
+            if arguments:
+                result["extensions_with_arguments"].append(raw_entry)
+
+            if name == "SIZE":
+                result["size"]["advertised"] = True
+                result["size"]["raw"] = arguments
+
+                if arguments is not None:
+                    value = str(arguments).strip()
+                    if value.isdigit():
+                        try:
+                            maximum = int(value)
+                        except (TypeError, ValueError, OverflowError):
+                            maximum = None
+                        else:
+                            if maximum >= 0:
+                                result["size"]["maximum"] = maximum
+                                result["size"]["valid"] = True
+
+                continue
+
+            if name == "AUTH":
+                result["auth"]["advertised"] = True
+                result["auth"]["raw"] = arguments
+
+                if arguments:
+                    result["auth"]["mechanisms"] = list(
+                        dict.fromkeys(
+                            token.upper()
+                            for token in str(arguments).split()
+                            if token.strip()
+                        )
+                    )
+
+                continue
+
+            if name in known_parameter_extensions:
+                result["known"][name] = {
+                    "advertised": True,
+                    "arguments": (
+                        str(arguments)
+                        if arguments is not None
+                        else None
+                    ),
+                    "raw": detail.get("raw"),
+                }
+                continue
+
+            if arguments:
+                result["unknown_parameters"].append(raw_entry)
+
+        return result
+
+    @staticmethod
+    def _analyze_smtp_auth(
+        capability_details: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Analyze advertised SMTP AUTH mechanisms without authenticating."""
+
+        auth_items = [
+            item
+            for item in capability_details
+            if str(item.get("name", "")).upper() in {"AUTH", "AUTH="}
+        ]
+
+        mechanisms: list[str] = []
+
+        for item in auth_items:
+            arguments = item.get("arguments") or ""
+            for mechanism in str(arguments).split():
+                normalized = mechanism.strip().upper()
+                if normalized and normalized not in mechanisms:
+                    mechanisms.append(normalized)
+
+        classes: dict[str, list[str]] = {
+            "strong": [],
+            "challenge_response": [],
+            "cleartext": [],
+            "legacy": [],
+            "unknown": [],
+        }
+
+        challenge_response = {
+            "CRAM-MD5",
+            "DIGEST-MD5",
+            "SCRAM-SHA-1",
+            "SCRAM-SHA-256",
+            "SCRAM-SHA-512",
+        }
+
+        cleartext = {
+            "PLAIN",
+            "LOGIN",
+        }
+
+        legacy = {
+            "NTLM",
+            "GSSAPI",
+            "XOAUTH",
+            "XOAUTH2",
+        }
+
+        strong = {
+            "SCRAM-SHA-256",
+            "SCRAM-SHA-512",
+        }
+
+        for mechanism in mechanisms:
+            if mechanism in strong:
+                classes["strong"].append(mechanism)
+            elif mechanism in challenge_response:
+                classes["challenge_response"].append(mechanism)
+            elif mechanism in cleartext:
+                classes["cleartext"].append(mechanism)
+            elif mechanism in legacy:
+                classes["legacy"].append(mechanism)
+            else:
+                classes["unknown"].append(mechanism)
+
+        return {
+            "advertised": bool(auth_items),
+            "mechanisms": mechanisms,
+            "mechanism_classes": classes,
+        }
+
+
+    @staticmethod
+    def _group_smtp_capabilities(
+        capability_details: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Group advertised SMTP extensions by protocol function."""
+
+        groups: dict[str, list[str]] = {
+            "security": [],
+            "authentication": [],
+            "transport": [],
+            "message_submission": [],
+            "encoding": [],
+            "delivery": [],
+            "size": [],
+            "session": [],
+            "internationalization": [],
+            "other": [],
+        }
+
+        security = {
+            "STARTTLS",
+            "AUTH",
+            "AUTH=",
+            "TLS",
+            "REQUIRETLS",
+        }
+
+        authentication = {
+            "AUTH",
+            "AUTH=",
+        }
+
+        transport = {
+            "PIPELINING",
+            "CHUNKING",
+            "BINARYMIME",
+            "8BITMIME",
+            "DSN",
+            "SMTPUTF8",
+        }
+
+        message_submission = {
+            "SIZE",
+            "BDAT",
+            "BURL",
+            "DELIVERBY",
+            "MT-PRIORITY",
+        }
+
+        encoding = {
+            "8BITMIME",
+            "BINARYMIME",
+            "CHUNKING",
+        }
+
+        delivery = {
+            "DSN",
+            "ETRN",
+            "ATRN",
+            "VERP",
+            "XVERP",
+            "XEXPS",
+        }
+
+        size = {
+            "SIZE",
+            "CHUNKING",
+            "BDAT",
+        }
+
+        session = {
+            "PIPELINING",
+            "ENHANCEDSTATUSCODES",
+            "HELP",
+            "NOOP",
+            "RSET",
+        }
+
+        internationalization = {
+            "SMTPUTF8",
+            "8BITMIME",
+        }
+
+        for detail in capability_details:
+            name = str(detail.get("name", "")).upper()
+
+            if not name:
+                continue
+
+            assigned: set[str] = set()
+
+            if name in security:
+                assigned.add("security")
+
+            if name in authentication:
+                assigned.add("authentication")
+
+            if name in transport:
+                assigned.add("transport")
+
+            if name in message_submission:
+                assigned.add("message_submission")
+
+            if name in encoding:
+                assigned.add("encoding")
+
+            if name in delivery:
+                assigned.add("delivery")
+
+            if name in size:
+                assigned.add("size")
+
+            if name in session:
+                assigned.add("session")
+
+            if name in internationalization:
+                assigned.add("internationalization")
+
+            if not assigned:
+                assigned.add("other")
+
+            for group in assigned:
+                if name not in groups[group]:
+                    groups[group].append(name)
+
+        return groups
+
+
+    @staticmethod
+    def _parse_smtp_enhanced_status(
+        lines: list[str],
+    ) -> dict[str, Any]:
+        """Extract RFC-style enhanced SMTP status information from reply lines."""
+
+        import re
+
+        pattern = re.compile(
+            r"\b([245]\.[0-9]\.[0-9]+)\b"
+        )
+
+        matches: list[str] = []
+
+        for line in lines:
+            match = pattern.search(str(line))
+            if match:
+                matches.append(match.group(1))
+
+        matches = list(dict.fromkeys(matches))
+
+        if not matches:
+            return {
+                "present": False,
+                "codes": [],
+                "primary": None,
+                "class": None,
+                "subject": None,
+                "detail": None,
+            }
+
+        primary = matches[0]
+        parts = primary.split(".")
+
+        status_class = {
+            "2": "success",
+            "4": "transient_failure",
+            "5": "permanent_failure",
+        }.get(parts[0])
+
+        return {
+            "present": True,
+            "codes": matches,
+            "primary": primary,
+            "class": status_class,
+            "subject": int(parts[1]),
+            "detail": int(parts[2]),
+        }
+
+    @staticmethod
+    def _analyze_smtp_greeting(
+        code: int | None,
+        lines: list[str] | None,
+    ) -> dict[str, Any]:
+        """Interpret SMTP greeting identity and structure."""
+
+        lines = list(lines or [])
+        first_line = lines[0].strip() if lines else ""
+
+        hostname = None
+        product_clues: list[str] = []
+        anomalies: list[dict[str, Any]] = []
+
+        if first_line:
+            match = re.match(r"^\s*\d{3}[ -]+([^\s]+)", first_line)
+            if match:
+                candidate = match.group(1).strip().rstrip(".")
+                hostname_valid = (
+                    bool(
+                        re.fullmatch(
+                            r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?",
+                            candidate,
+                        )
+                    )
+                    and (
+                        "." in candidate
+                        or candidate.lower() == "localhost"
+                    )
+                )
+
+                try:
+                    ipaddress.ip_address(candidate)
+                    hostname_valid = True
+                except ValueError:
+                    pass
+
+                if hostname_valid:
+                    hostname = candidate
+
+            lowered = first_line.lower()
+            product_patterns = {
+                "postfix": "Postfix",
+                "exim": "Exim",
+                "sendmail": "Sendmail",
+                "opensmtpd": "OpenSMTPD",
+                "haraka": "Haraka",
+                "qmail": "qmail",
+                "microsoft": "Microsoft SMTP",
+                "exchange": "Microsoft Exchange",
+            }
+
+            for marker_text, product in product_patterns.items():
+                if marker_text in lowered and product not in product_clues:
+                    product_clues.append(product)
+
+        if code == 220:
+            semantic = "service_ready"
+        elif code == 421:
+            semantic = "service_unavailable"
+        elif code is None:
+            semantic = "no_response"
+        elif 400 <= code < 500:
+            semantic = "temporary_failure"
+        elif 500 <= code < 600:
+            semantic = "permanent_failure"
+        else:
+            semantic = "unexpected_greeting"
+
+        if not lines:
+            anomalies.append(
+                {
+                    "code": "empty_greeting",
+                    "severity": "medium",
+                    "confidence": 0.95,
+                    "description": "SMTP server returned an empty greeting.",
+                    "evidence": [],
+                }
+            )
+
+        if code is not None and code != 220:
+            anomalies.append(
+                {
+                    "code": "unexpected_greeting_code",
+                    "severity": "low",
+                    "confidence": 0.95,
+                    "description": (
+                        f"SMTP greeting returned response code {code} "
+                        "instead of the expected 220 service-ready code."
+                    ),
+                    "evidence": lines,
+                }
+            )
+
+        if len(lines) > 1:
+            separators = [
+                line[3:4]
+                for line in lines
+                if len(line) >= 4 and line[:3].isdigit()
+            ]
+            if separators and separators[-1] == "-":
+                anomalies.append(
+                    {
+                        "code": "unterminated_multiline_greeting",
+                        "severity": "low",
+                        "confidence": 0.90,
+                        "description": (
+                            "SMTP greeting appears to remain in multiline "
+                            "continuation state."
+                        ),
+                        "evidence": lines,
+                    }
+                )
+
+        return {
+            "code": code,
+            "semantic": semantic,
+            "hostname": hostname,
+            "product_clues": product_clues,
+            "line_count": len(lines),
+            "multiline": len(lines) > 1,
+            "anomalies": anomalies,
+            "anomaly_count": len(anomalies),
+        }
+
+    @staticmethod
+    def _analyze_smtp_response_status(
+        code: int | None,
+        lines: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Combine SMTP numeric and enhanced status into semantic intelligence."""
+
+        lines = lines or []
+        numeric_status = (
+            ProtocolProbe._classify_smtp_response(code)
+            if code is not None
+            else "no_response"
+        )
+        enhanced = ProtocolProbe._parse_smtp_enhanced_status(lines)
+
+        semantics = "unknown"
+
+        if code is None:
+            semantics = "no_response"
+        elif 100 <= code < 200:
+            semantics = "preliminary"
+        elif 200 <= code < 300:
+            semantics = "accepted"
+        elif 300 <= code < 400:
+            semantics = "continuation_required"
+        elif 400 <= code < 500:
+            semantics = "temporary_failure"
+        elif 500 <= code < 600:
+            semantics = "permanent_failure"
+
+        if enhanced["present"]:
+            primary = enhanced["primary"]
+            enhanced_class = enhanced["class"]
+
+            if enhanced_class == "success":
+                if primary.startswith("2.0."):
+                    semantics = "success"
+                elif primary.startswith("2.1."):
+                    semantics = "mailbox_success"
+                elif primary.startswith("2.5."):
+                    semantics = "mail_system_success"
+            elif enhanced_class == "transient_failure":
+                if primary.startswith("4.4."):
+                    semantics = "temporary_network_failure"
+                elif primary.startswith("4.7."):
+                    semantics = "temporary_security_or_policy_failure"
+                else:
+                    semantics = "temporary_failure"
+            elif enhanced_class == "permanent_failure":
+                if primary.startswith("5.1."):
+                    semantics = "mailbox_or_address_failure"
+                elif primary.startswith("5.5."):
+                    semantics = "command_or_protocol_failure"
+                elif primary.startswith("5.7."):
+                    semantics = "security_or_policy_rejection"
+                else:
+                    semantics = "permanent_failure"
+
+        return {
+            "code": code,
+            "numeric_status": numeric_status,
+            "enhanced_status": enhanced,
+            "semantics": semantics,
+            "lines": list(lines),
+        }
+
+    @staticmethod
+    def _classify_smtp_response(code: int) -> str:
+        """Classify an SMTP response code by its first digit."""
+
+        if 100 <= code < 200:
+            return "preliminary"
+        if 200 <= code < 300:
+            return "success"
+        if 300 <= code < 400:
+            return "continuation"
+        if 400 <= code < 500:
+            return "transient_error"
+        if 500 <= code < 600:
+            return "permanent_error"
+        return "unknown"
+
+    def _smtp_command(
+        self,
+        sock: socket.socket,
+        command: str,
+        response_buffer: bytearray,
+    ) -> tuple[int, list[str]] | None:
+        """Send one bounded, non-authenticating SMTP command."""
+
+        if not command or "\r" in command or "\n" in command:
+            raise ValueError("invalid SMTP command")
+
+        encoded = (command + "\r\n").encode("ascii")
+
+        if len(encoded) > 1024:
+            raise ValueError("SMTP command exceeds maximum length")
+
+        sock.sendall(encoded)
+
+        return self._smtp_read_response(
+            sock,
+            response_buffer,
+        )
+
+    def _smtp_read_response(
+        self,
+        sock: socket.socket,
+        response_buffer: bytearray,
+    ) -> tuple[int, list[str]] | None:
+        """Read exactly one bounded SMTP response from a connection buffer."""
+
+        max_bytes = min(self._max_body_bytes, 65536)
+
+        while True:
+            newline = response_buffer.find(b"\n")
+
+            if newline == -1:
+                if len(response_buffer) >= max_bytes:
+                    return None
+
+                chunk = sock.recv(
+                    min(1024, max_bytes - len(response_buffer))
+                )
+
+                if not chunk:
+                    return None
+
+                response_buffer.extend(chunk)
+                continue
+
+            raw_line = bytes(response_buffer[:newline + 1])
+            del response_buffer[:newline + 1]
+
+            line = raw_line.rstrip(b"\r\n").decode(
+                "utf-8",
+                errors="replace",
+            )
+
+            if len(line) < 3 or not line[:3].isdigit():
+                return None
+
+            code = int(line[:3])
+
+            if len(line) == 3:
+                return code, [line]
+
+            separator = line[3]
+
+            if separator == "-":
+                lines = [line]
+                while True:
+                    next_newline = response_buffer.find(b"\n")
+
+                    if next_newline == -1:
+                        if len(response_buffer) >= max_bytes:
+                            return None
+
+                        chunk = sock.recv(
+                            min(
+                                1024,
+                                max_bytes - len(response_buffer),
+                            )
+                        )
+
+                        if not chunk:
+                            return None
+
+                        response_buffer.extend(chunk)
+                        continue
+
+                    raw_next = bytes(
+                        response_buffer[:next_newline + 1]
+                    )
+                    del response_buffer[:next_newline + 1]
+
+                    next_line = raw_next.rstrip(
+                        b"\r\n"
+                    ).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+
+                    if (
+                        len(next_line) < 4
+                        or not next_line[:3].isdigit()
+                    ):
+                        return None
+
+                    if int(next_line[:3]) != code:
+                        lines.append(next_line)
+                        continue
+
+                    lines.append(next_line)
+
+                    if len(next_line) == 3 or next_line[3] == " ":
+                        return code, lines
+
+                    if next_line[3] == "-":
+                        continue
+
+                    return None
+
+            if separator == " ":
+                return code, [line]
+
+            return None
+
 
     def _probe_ftp(
         self,

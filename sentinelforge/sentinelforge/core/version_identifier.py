@@ -69,6 +69,51 @@ class VersionIdentifier:
             ),
         ),
         (
+            "smtp",
+            "Exim",
+            "exim",
+            re.compile(
+                r"\bExim\s+(?:ESMTP\s+)?([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "smtp",
+            "Sendmail",
+            "sendmail",
+            re.compile(
+                r"\bSendmail(?:\s+version)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "smtp",
+            "OpenSMTPD",
+            "opensmtpd",
+            re.compile(
+                r"\bOpenSMTPD(?:\s+ESMTP)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "smtp",
+            "Haraka",
+            "haraka",
+            re.compile(
+                r"\bHaraka(?:\s+ESMTP)?\s+([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
+            "smtp",
+            "qmail",
+            "qmail",
+            re.compile(
+                r"\bqmail(?:-smtpd)?[^0-9]*([0-9]+(?:\.[0-9]+)+)",
+                re.IGNORECASE,
+            ),
+        ),
+        (
             "http",
             "nginx",
             "nginx",
