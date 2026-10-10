@@ -8,9 +8,12 @@ handshakes; security-specific checks remain in their existing plugins.
 from __future__ import annotations
 
 import re
+import time
+import hashlib
 
 import ipaddress
 import socket
+import struct
 import ssl
 import urllib.error
 import urllib.request
@@ -21,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sentinelforge.core.network import ssl_context
+from sentinelforge.core.dns_probe import DnsProbe
 
 
 @dataclass(frozen=True)
@@ -77,20 +81,62 @@ class ProtocolProbe:
     ) -> ProtocolObservation:
         """Probe a discovered service and return a structured observation."""
 
-        if transport.lower() != "tcp":
+        transport_name = transport.lower()
+        service_name = (service or "unknown").lower()
+
+        if service_name == "dns" or port == 53:
+            return self._probe_dns(
+                target,
+                address,
+                address_family,
+                port,
+                transport_name,
+            )
+
+        if transport_name != "tcp":
             return self._unsupported(
                 target,
                 address,
                 address_family,
                 port,
-                transport,
+                transport_name,
                 "Only TCP protocol probes are currently implemented.",
             )
 
-        service_name = (service or "unknown").lower()
-
         if service_name == "ftp" or port == 21:
             return self._probe_ftp(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
+        if service_name in {"mssql", "sqlserver", "microsoft sql server", "tds"} or port == 1433:
+            return self._probe_mssql(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
+        if service_name in {"postgresql", "postgres", "pgsql"} or port == 5432:
+            return self._probe_postgresql(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
+        if service_name in {"mongodb", "mongo"} or port == 27017:
+            return self._probe_mongodb(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
+        if service_name in {"mysql", "mariadb"} or port == 3306:
+            return self._probe_mysql(
                 target,
                 address,
                 address_family,
@@ -147,6 +193,1021 @@ class ProtocolProbe:
             port,
             transport,
             f"No protocol probe is registered for service '{service}'.",
+        )
+
+    def _probe_postgresql(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Perform bounded PostgreSQL SSL negotiation and startup identification."""
+
+        family = (
+            socket.AF_INET6
+            if address_family.lower() in {"ipv6", "af_inet6"}
+            else socket.AF_INET
+        )
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(self._timeout)
+        ssl_accepted = False
+        tls_established = False
+
+        try:
+            sock.connect((address, port))
+
+            # PostgreSQL SSLRequest: length 8, request code 80877103.
+            sock.sendall(struct.pack("!II", 8, 80877103))
+            ssl_reply = self._recv_exact(sock, 1)
+
+            if ssl_reply == b"S":
+                ssl_accepted = True
+                context = (
+                    ssl_context(self._config)
+                    if self._config is not None
+                    else ssl.create_default_context()
+                )
+                sock = context.wrap_socket(sock, server_hostname=target)
+                sock.settimeout(self._timeout)
+                tls_established = True
+            elif ssl_reply != b"N":
+                raise ValueError(
+                    "Invalid or incomplete PostgreSQL SSL negotiation response"
+                )
+
+            # StartupMessage protocol 3.0. No password or SQL is sent.
+            parameters = (
+                b"user\x00sentinelforge_probe\x00"
+                b"database\x00postgres\x00"
+                b"application_name\x00SentinelForge\x00"
+                b"client_encoding\x00UTF8\x00"
+                b"\x00"
+            )
+            startup_body = struct.pack("!I", 196608) + parameters
+            startup_packet = struct.pack(
+                "!I", len(startup_body) + 4
+            ) + startup_body
+            if len(startup_packet) > 4096:
+                raise ValueError("PostgreSQL startup packet exceeds limit")
+            sock.sendall(startup_packet)
+
+            header = self._recv_exact(sock, 5)
+            if header is None:
+                raise ValueError("Incomplete PostgreSQL startup response")
+
+            message_type = chr(header[0])
+            message_length = struct.unpack("!I", header[1:])[0]
+            if message_length < 4 or message_length > 65536:
+                raise ValueError(
+                    f"Invalid PostgreSQL response length: {message_length}"
+                )
+
+            payload = self._recv_exact(sock, message_length - 4)
+            if payload is None:
+                raise ValueError("Truncated PostgreSQL startup response")
+
+            response_names = {
+                "E": "error",
+                "R": "authentication",
+                "S": "parameter_status",
+                "K": "backend_key_data",
+                "Z": "ready_for_query",
+                "N": "notice",
+                "A": "notification",
+                "v": "negotiate_protocol_version",
+                "T": "row_description",
+                "C": "command_complete",
+                "I": "empty_query",
+            }
+            response_name = response_names.get(message_type)
+            if response_name is None:
+                raise ValueError(
+                    f"Unexpected PostgreSQL response type: {message_type!r}"
+                )
+
+            data = {
+                "ssl_supported": ssl_accepted and tls_established,
+                "ssl_negotiation_accepted": ssl_accepted,
+                "tls_established": tls_established,
+                "server_response_type": response_name,
+                "server_message_length": message_length,
+                "credentials_sent": False,
+                "sql_sent": False,
+                "startup_parameters": [
+                    "user", "database", "application_name", "client_encoding"
+                ],
+            }
+
+            evidence = [
+                "Valid PostgreSQL startup response received",
+                f"PostgreSQL response type: {response_name}",
+                f"TLS established: {tls_established}",
+                "No password or SQL was sent",
+            ]
+
+            if message_type == "K":
+                # BackendKeyData: exactly two 32-bit integers.
+                if len(payload) != 8:
+                    raise ValueError(
+                        "Malformed PostgreSQL BackendKeyData payload"
+                    )
+                backend_process_id, _ = struct.unpack("!II", payload)
+                if backend_process_id == 0:
+                    raise ValueError(
+                        "Invalid PostgreSQL backend process ID"
+                    )
+                data["backend_process_id"] = backend_process_id
+                data["backend_secret_key_present"] = True
+                # Do not expose or retain the server's secret key.
+                evidence.append("Valid PostgreSQL BackendKeyData received")
+
+            if message_type == "S":
+                # ParameterStatus: name\0value\0, with no trailing bytes.
+                if (
+                    len(payload) < 3
+                    or not payload.endswith(b"\x00")
+                    or payload.count(b"\x00") != 2
+                ):
+                    raise ValueError(
+                        "Malformed PostgreSQL ParameterStatus payload"
+                    )
+                parameter_name, parameter_value, terminator = payload.split(b"\x00")
+                if not parameter_name or terminator != b"":
+                    raise ValueError(
+                        "Invalid PostgreSQL ParameterStatus fields"
+                    )
+                try:
+                    decoded_parameter_name = parameter_name.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ValueError(
+                        "Invalid PostgreSQL ParameterStatus name encoding"
+                    ) from exc
+
+                data["parameter_status"] = {
+                    "name": decoded_parameter_name,
+                    "value": parameter_value.decode("utf-8", errors="replace"),
+                }
+                evidence.append(
+                    "PostgreSQL parameter status received: "
+                    + data["parameter_status"]["name"]
+                )
+
+            elif message_type == "Z":
+                # ReadyForQuery has exactly one status byte: I, T, or E.
+                if len(payload) != 1 or payload not in {b"I", b"T", b"E"}:
+                    raise ValueError(
+                        "Malformed PostgreSQL ReadyForQuery payload"
+                    )
+                data["transaction_status"] = payload.decode("ascii")
+                evidence.append(
+                    "PostgreSQL transaction status: "
+                    + data["transaction_status"]
+                )
+
+            if message_type == "R":
+                if len(payload) < 4:
+                    raise ValueError(
+                        "Truncated PostgreSQL authentication request"
+                    )
+
+                auth_code = struct.unpack("!I", payload[:4])[0]
+                auth_methods = {
+                    0: "OK",
+                    2: "KERBEROS_V5",
+                    3: "CLEAR_TEXT_PASSWORD",
+                    5: "MD5_PASSWORD",
+                    6: "SCM_CREDENTIAL",
+                    7: "GSS",
+                    8: "GSS_CONTINUE",
+                    9: "SSPI",
+                    10: "SASL",
+                    11: "SASL_CONTINUE",
+                    12: "SASL_FINAL",
+                }
+                auth_name = auth_methods.get(auth_code)
+                if auth_name is None:
+                    raise ValueError(
+                        f"Unknown PostgreSQL authentication code: {auth_code}"
+                    )
+
+                expected_auth_payload_lengths = {
+                    0: {4},       # AuthenticationOk
+                    2: {4},       # Kerberos V5
+                    3: {4},       # Cleartext password request
+                    5: {8},       # MD5 request: code + four-byte salt
+                    6: {4},       # SCM credentials
+                    7: {4},       # GSS
+                    8: None,      # GSS continuation data is variable
+                    9: {4},       # SSPI
+                    10: None,     # SASL mechanism list is variable
+                    11: None,     # SASL continuation data is variable
+                    12: None,     # SASL final data is variable
+                }
+                expected_length = expected_auth_payload_lengths[auth_code]
+                if auth_code in {11, 12} and len(payload) <= 4:
+                    raise ValueError(
+                        f"Empty PostgreSQL {auth_name} data"
+                    )
+                if (
+                    expected_length is not None
+                    and len(payload) not in expected_length
+                ):
+                    raise ValueError(
+                        f"Invalid PostgreSQL {auth_name} payload length: "
+                        f"{len(payload)}"
+                    )
+
+                data["authentication_method"] = auth_name
+
+                if auth_code == 10:
+                    mechanisms = payload[4:]
+                    if not mechanisms or not mechanisms.endswith(b"\x00\x00"):
+                        raise ValueError(
+                            "Malformed PostgreSQL SASL mechanism list"
+                        )
+                    names = [
+                        item.decode("ascii")
+                        for item in mechanisms.split(b"\x00")
+                        if item
+                    ]
+                    if not names:
+                        raise ValueError(
+                            "Empty PostgreSQL SASL mechanism list"
+                        )
+                    if len(names) != len(set(names)):
+                        raise ValueError(
+                            "Duplicate PostgreSQL SASL mechanisms"
+                        )
+                    data["authentication_mechanisms"] = names
+                    evidence.append(
+                        "PostgreSQL authentication method: SASL"
+                    )
+                    evidence.append(
+                        "Advertised SASL mechanisms: " + ", ".join(names)
+                    )
+                else:
+                    evidence.append(
+                        f"PostgreSQL authentication method: {auth_name}"
+                    )
+
+            if message_type in {"E", "N"}:
+                fields = {}
+                offset = 0
+                terminated = False
+                while offset < len(payload):
+                    field_code = payload[offset]
+                    offset += 1
+                    if field_code == 0:
+                        terminated = True
+                        if offset != len(payload):
+                            raise ValueError(
+                                "Unexpected bytes after PostgreSQL error terminator"
+                            )
+                        break
+
+                    field_end = payload.find(b"\x00", offset)
+                    if field_end < 0:
+                        raise ValueError(
+                            "Unterminated PostgreSQL error field"
+                        )
+                    if chr(field_code) in fields:
+                        raise ValueError(
+                            "Duplicate PostgreSQL error response field"
+                        )
+                    value = payload[offset:field_end]
+                    offset = field_end + 1
+                    try:
+                        decoded = value.decode("utf-8")
+                    except UnicodeDecodeError:
+                        decoded = value.decode("utf-8", errors="replace")
+                    fields[chr(field_code)] = decoded
+
+                if not terminated:
+                    raise ValueError(
+                        "PostgreSQL ErrorResponse lacks field terminator"
+                    )
+
+                parsed_fields = {
+                    "severity": fields.get("V") or fields.get("S"),
+                    "sqlstate": fields.get("C"),
+                    "message": fields.get("M"),
+                }
+                data[
+                    "startup_error" if message_type == "E"
+                    else "startup_notice"
+                ] = parsed_fields
+                if fields.get("C"):
+                    evidence.append(
+                        f"PostgreSQL SQLSTATE: {fields['C']}"
+                    )
+                if fields.get("M"):
+                    evidence.append(
+                        f"PostgreSQL startup response: {fields['M']}"
+                    )
+
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="postgresql",
+                success=True,
+                identification_method="postgresql_startup_response",
+                confidence=0.99,
+                timestamp=self._timestamp(),
+                data=data,
+                evidence=tuple(evidence),
+            )
+
+        except (
+            TimeoutError,
+            ConnectionResetError,
+            OSError,
+            ValueError,
+            struct.error,
+            ssl.SSLError,
+        ) as exc:
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="postgresql",
+                success=False,
+                identification_method="postgresql_handshake_invalid",
+                confidence=0.0,
+                timestamp=self._timestamp(),
+                data={
+                    "ssl_negotiation_accepted": ssl_accepted,
+                    "tls_established": tls_established,
+                    "credentials_sent": False,
+                    "sql_sent": False,
+                },
+                evidence=(
+                    f"PostgreSQL probe failed: {type(exc).__name__}: {exc}",
+                ),
+                error=(
+                    f"postgresql_handshake_invalid: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+        finally:
+            sock.close()
+
+    def _probe_mongodb(
+        self,
+        target,
+        address,
+        address_family,
+        port,
+    ):
+        """Identify MongoDB using a bounded OP_MSG hello handshake."""
+        import socket
+        import struct
+        import time
+
+        try:
+            from bson import BSON
+        except ImportError as exc:
+            return self._error_observation(
+                target, address, address_family, port,
+                "mongodb", "mongodb_optional_dependency_missing", exc,
+            )
+
+        op_msg = 2013
+        max_frame = min(max(int(self._max_body_bytes), 1024), 1024 * 1024)
+        timeout = float(self._timeout)
+        request_id = int(time.monotonic_ns() & 0x7fffffff)
+        sock = None
+
+        def crc32c(data):
+            crc = 0xffffffff
+            for byte in data:
+                crc ^= byte
+                for _ in range(8):
+                    crc = (crc >> 1) ^ (
+                        0x82f63b78 if crc & 1 else 0
+                    )
+            return crc ^ 0xffffffff
+
+        def receive_exact(connection, size, deadline):
+            chunks = []
+            remaining = size
+            while remaining:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("MongoDB response deadline exceeded")
+                connection.settimeout(left)
+                chunk = connection.recv(remaining)
+                if not chunk:
+                    raise ValueError("Truncated MongoDB wire response")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+
+        try:
+            deadline = time.monotonic() + timeout
+
+            document = BSON.encode({
+                "hello": 1,
+                "helloOk": True,
+                "$db": "admin",
+            })
+            body = struct.pack("<I", 0) + b"\x00" + document
+            packet = struct.pack(
+                "<iiii", 16 + len(body), request_id, 0, op_msg
+            ) + body
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MongoDB request deadline exceeded")
+
+            sock = socket.socket(address_family, socket.SOCK_STREAM)
+            sock.settimeout(remaining)
+            sock.connect(address)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("MongoDB request deadline exceeded")
+            sock.settimeout(remaining)
+            sock.sendall(packet)
+
+            header = receive_exact(sock, 16, deadline)
+            length, _response_id, response_to, opcode = struct.unpack(
+                "<iiii", header
+            )
+
+            if length < 26 or length > max_frame:
+                raise ValueError(f"Invalid MongoDB frame length: {length}")
+            if response_to != request_id:
+                raise ValueError("MongoDB response-to ID does not match request")
+            if opcode != op_msg:
+                raise ValueError(f"Expected OP_MSG; received opcode {opcode}")
+
+            body = receive_exact(sock, length - 16, deadline)
+            if len(body) < 10:
+                raise ValueError("MongoDB OP_MSG body is too short")
+
+            flags = struct.unpack_from("<I", body)[0]
+            # This probe supports checksumPresent only.
+            if flags & ~0x00000001:
+                raise ValueError("Unsupported MongoDB OP_MSG flags")
+
+            checksum_size = 4 if flags & 1 else 0
+            if len(body) < 10 + checksum_size:
+                raise ValueError("MongoDB OP_MSG document is truncated")
+
+            if checksum_size:
+                supplied = struct.unpack_from("<I", body, len(body) - 4)[0]
+                if crc32c(header + body[:-4]) != supplied:
+                    raise ValueError("MongoDB OP_MSG CRC-32C checksum mismatch")
+
+            section = body[4:len(body) - checksum_size]
+            if not section or section[0] != 0:
+                raise ValueError("MongoDB hello response lacks kind-0 BSON section")
+
+            bson_bytes = section[1:]
+            if len(bson_bytes) < 5:
+                raise ValueError("MongoDB BSON document is truncated")
+            declared = struct.unpack_from("<i", bson_bytes)[0]
+            if declared != len(bson_bytes):
+                raise ValueError("MongoDB BSON length does not match section")
+
+            try:
+                response = BSON(bson_bytes).decode()
+            except Exception as exc:
+                raise ValueError(f"Invalid MongoDB hello BSON: {exc}") from exc
+
+            if not isinstance(response, dict):
+                raise ValueError("MongoDB hello response is not a document")
+            ok = response.get("ok")
+            if isinstance(ok, bool) or not isinstance(ok, (int, float)) or ok != 1:
+                raise ValueError("MongoDB hello command was not successful")
+
+            evidence = [
+                "MongoDB OP_MSG hello response received",
+                "Response-to ID matched request",
+                "BSON decoded and hello returned ok=1",
+            ]
+            if isinstance(response.get("version"), str):
+                evidence.append(f"Server version: {response['version']}")
+            if isinstance(response.get("maxWireVersion"), int):
+                evidence.append(
+                    f"Maximum wire version: {response['maxWireVersion']}"
+                )
+
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="mongodb",
+                success=True,
+                identification_method="mongodb_op_msg_hello",
+                confidence=0.99,
+                timestamp=self._timestamp(),
+                data={
+                    key: response[key]
+                    for key in (
+                        "version", "maxWireVersion", "minWireVersion",
+                        "maxBsonObjectSize", "logicalSessionTimeoutMinutes",
+                    )
+                    if key in response
+                },
+                evidence=tuple(evidence),
+                error=None,
+            )
+
+        except Exception as exc:
+            # Prevent ordinary probe failures from aborting the overall scan.
+            return self._error_observation(
+                target, address, address_family, port,
+                "mongodb", "mongodb_handshake_error", exc,
+            )
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    def _probe_mssql(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Identify Microsoft SQL Server using TDS PRELOGIN only."""
+
+        protocol = "mssql"
+        try:
+            family = (
+                socket.AF_INET6
+                if address_family.lower() in {"ipv6", "af_inet6"}
+                else socket.AF_INET
+            )
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self._timeout)
+                sock.connect((address, port))
+                # TDS PRELOGIN option table: VERSION and ENCRYPTION, then terminator.
+                version_offset = 11
+                encryption_offset = 17
+                payload = (
+                    b"\\x00" + struct.pack("!HH", version_offset, 6)
+                    + b"\\x01" + struct.pack("!HH", encryption_offset, 1)
+                    + b"\\xff"
+                    + b"\\x00\\x00\\x00\\x00\\x00\\x00"
+                    + b"\\x02"
+                )
+                packet = struct.pack("!BBHHBB", 0x12, 0x01, len(payload) + 8, 0, 1, 0) + payload
+                sock.sendall(packet)
+
+                response_buffer = bytearray()
+                response_deadline = time.monotonic() + self._timeout
+
+                def recv_tds_exact(size: int) -> bytes | None:
+                    data = bytearray()
+                    while len(data) < size:
+                        remaining = response_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError(
+                                "TDS PRELOGIN response deadline exceeded"
+                            )
+                        sock.settimeout(remaining)
+                        try:
+                            chunk = sock.recv(size - len(data))
+                        except socket.timeout as exc:
+                            raise TimeoutError(
+                                "TDS PRELOGIN response deadline exceeded"
+                            ) from exc
+                        if not chunk:
+                            return None
+                        data.extend(chunk)
+                    return bytes(data)
+
+                while True:
+                    header = recv_tds_exact(8)
+                    if header is None:
+                        raise ValueError("Truncated TDS response header")
+
+                    packet_type, status, packet_length = struct.unpack(
+                        "!BBH", header[:4]
+                    )
+                    if packet_type != 0x04:
+                        raise ValueError(
+                            f"Unexpected TDS response packet type: 0x{packet_type:02x}"
+                        )
+                    if packet_length < 9:
+                        raise ValueError(
+                            f"Invalid TDS response length: {packet_length}"
+                        )
+
+                    packet_payload_length = packet_length - 8
+                    if (
+                        len(response_buffer) + packet_payload_length
+                        > self._max_body_bytes
+                    ):
+                        raise ValueError(
+                            "TDS PRELOGIN response exceeds configured size limit"
+                        )
+
+                    packet_payload = recv_tds_exact(packet_payload_length)
+                    if packet_payload is None:
+                        raise ValueError("Truncated TDS PRELOGIN response")
+
+                    response_buffer.extend(packet_payload)
+                    if status & 0x01:
+                        break
+
+                response = bytes(response_buffer)
+
+            options = {}
+            cursor = 0
+            table_end = None
+            while cursor < len(response):
+                token = response[cursor]
+                cursor += 1
+                if token == 0xFF:
+                    table_end = cursor
+                    break
+                if cursor + 4 > len(response):
+                    raise ValueError("Malformed TDS PRELOGIN option table")
+                offset, length = struct.unpack("!HH", response[cursor:cursor + 4])
+                cursor += 4
+                if token in options:
+                    raise ValueError("Duplicate TDS PRELOGIN option")
+                options[token] = (offset, length)
+
+            if table_end is None:
+                raise ValueError("Missing TDS PRELOGIN option terminator")
+
+            parsed = {}
+            ranges = []
+            for token, (offset, length) in options.items():
+                end = offset + length
+                if offset < table_end or end > len(response):
+                    raise ValueError("TDS PRELOGIN option offset is out of bounds")
+
+                if length:
+                    for existing_start, existing_end in ranges:
+                        if offset < existing_end and end > existing_start:
+                            raise ValueError("overlapping TDS PRELOGIN option ranges")
+                    ranges.append((offset, end))
+
+                parsed[token] = response[offset:end]
+
+            version = parsed.get(0x00)
+            encryption = parsed.get(0x01)
+            encryption_names = {
+                0: "ENCRYPT_OFF",
+                1: "ENCRYPT_ON",
+                2: "ENCRYPT_NOT_SUP",
+                3: "ENCRYPT_REQ",
+            }
+            encryption_value = encryption[0] if encryption and len(encryption) == 1 else None
+            if encryption is not None and encryption_value is None:
+                raise ValueError("Invalid TDS encryption option length")
+            if encryption_value is not None and encryption_value not in encryption_names:
+                raise ValueError("Unknown TDS encryption option value")
+
+            data = {
+                "prelogin_received": True,
+                "tds_packet_type": packet_type,
+                "tds_version_hex": version.hex() if version else None,
+                "encryption_option": encryption_value,
+                "encryption_option_name": encryption_names.get(encryption_value),
+                "options_present": sorted(options),
+            }
+            return ProtocolObservation(
+                target=target, address=address, address_family=address_family,
+                port=port, transport="tcp", protocol=protocol, success=True,
+                identification_method="mssql_tds_prelogin", confidence=0.98,
+                timestamp=self._timestamp(), data=data,
+                evidence=("Received a valid TDS PRELOGIN response; no credentials or SQL were sent.",),
+            )
+        except (OSError, ValueError, struct.error) as exc:
+            return self._error_observation(
+                target, address, address_family, port, protocol,
+                "mssql_prelogin_failed", exc,
+            )
+
+    def _probe_mysql(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Read and classify a bounded MySQL/MariaDB initial handshake."""
+
+        import struct
+
+        family = (
+            socket.AF_INET6
+            if address_family.lower() in {"ipv6", "af_inet6"}
+            else socket.AF_INET
+        )
+
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(self._timeout)
+
+        try:
+            sock.connect((address, port))
+
+            header = self._recv_exact(sock, 4)
+            if header is None:
+                raise ValueError("Incomplete MySQL packet header")
+
+            packet_length = int.from_bytes(header[:3], "little")
+            sequence_id = header[3]
+
+            if packet_length < 1 or packet_length > 65536:
+                raise ValueError(
+                    f"Invalid MySQL handshake packet length: {packet_length}"
+                )
+
+            if sequence_id != 0:
+                raise ValueError(
+                    f"Unexpected MySQL greeting sequence ID: {sequence_id}"
+                )
+
+            payload = self._recv_exact(sock, packet_length)
+            if payload is None:
+                raise ValueError("Truncated MySQL handshake payload")
+
+            if len(payload) < 1 or payload[0] != 10:
+                raise ValueError("Invalid MySQL protocol-10 greeting")
+
+            offset = 1
+            version_end = payload.find(bytes([0]), offset)
+            if version_end < 0:
+                raise ValueError("MySQL greeting has no terminated server version")
+
+            try:
+                server_version = payload[offset:version_end].decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    "Invalid non-ASCII MySQL server-version string"
+                ) from exc
+            if not server_version or not server_version.isprintable():
+                raise ValueError("Invalid MySQL server-version string")
+            version_lower = server_version.lower()
+            if "mariadb" in version_lower:
+                server_family = "mariadb"
+            elif "mysql" in version_lower:
+                server_family = "mysql"
+            else:
+                server_family = "mysql_compatible"
+            offset = version_end + 1
+
+            if offset + 4 + 8 + 1 + 2 > len(payload):
+                raise ValueError("Truncated MySQL greeting fields")
+
+            connection_id = struct.unpack_from("<I", payload, offset)[0]
+            if connection_id == 0:
+                raise ValueError("Invalid MySQL connection ID: zero is reserved")
+            offset += 4
+            salt_part_one = payload[offset:offset + 8]
+            offset += 8
+
+            if payload[offset] != 0:
+                raise ValueError("Invalid MySQL greeting filler byte")
+            offset += 1
+
+            lower_capabilities = struct.unpack_from("<H", payload, offset)[0]
+            offset += 2
+
+            data = {
+                "protocol_version": 10,
+                "server_version": server_version,
+                "server_family": server_family,
+                "connection_id": connection_id,
+                "capability_flags": lower_capabilities,
+                "capabilities": [],
+                "character_set": None,
+                "status_flags": None,
+                "authentication_plugin": None,
+                "authentication_salt_length": len(salt_part_one),
+                "handshake_complete": False,
+            }
+
+            capability_names = {
+                0x000001: "long_password",
+                0x000002: "found_rows",
+                0x000004: "long_flag",
+                0x000008: "connect_with_database",
+                0x000010: "no_schema",
+                0x000020: "compress",
+                0x000040: "odbc",
+                0x000080: "local_files",
+                0x000100: "ignore_space",
+                0x000200: "protocol_41",
+                0x000400: "interactive",
+                0x000800: "ssl",
+                0x001000: "ignore_sigpipe",
+                0x002000: "transactions",
+                0x008000: "secure_connection",
+                0x010000: "multi_statements",
+                0x020000: "multi_results",
+                0x040000: "ps_multi_results",
+                0x080000: "plugin_auth",
+                0x100000: "connect_attrs",
+                0x200000: "plugin_auth_lenenc_client_data",
+                0x400000: "can_handle_expired_passwords",
+                0x800000: "session_track",
+                0x1000000: "deprecate_eof",
+            }
+
+            capabilities = lower_capabilities
+            for bit, name in capability_names.items():
+                if lower_capabilities & bit:
+                    data["capabilities"].append(name)
+
+            if offset < len(payload):
+                if offset + 5 > len(payload):
+                    raise ValueError("Truncated MySQL capability metadata")
+
+                data["character_set"] = payload[offset]
+                offset += 1
+
+                data["status_flags"] = struct.unpack_from(
+                    "<H", payload, offset
+                )[0]
+                offset += 2
+
+                upper_capabilities = struct.unpack_from(
+                    "<H", payload, offset
+                )[0]
+                offset += 2
+                capabilities |= upper_capabilities << 16
+                data["capability_flags"] = capabilities
+
+                auth_length = payload[offset] if offset < len(payload) else 0
+                if offset < len(payload):
+                    offset += 1
+
+                reserved_end = offset + 10
+                if reserved_end > len(payload):
+                    raise ValueError("Truncated MySQL reserved handshake fields")
+                if any(payload[offset:reserved_end]):
+                    raise ValueError("Nonzero MySQL reserved handshake bytes")
+                offset = reserved_end
+
+                if capabilities & 0x00008000:
+                    auth_data_length = max(13, auth_length - 8)
+                    remaining = payload[offset:]
+                    if len(remaining) < auth_data_length:
+                        raise ValueError(
+                            "Truncated MySQL authentication data"
+                        )
+
+                    salt_part_two = remaining[:auth_data_length]
+                    offset += auth_data_length
+                    salt = (salt_part_one + salt_part_two).rstrip(bytes([0]))
+                    data["authentication_salt_length"] = len(salt)
+
+                    if capabilities & 0x00080000:
+                        if offset >= len(payload):
+                            raise ValueError(
+                                "Missing MySQL authentication plugin name"
+                            )
+                        plugin_end = payload.find(bytes([0]), offset)
+                        if plugin_end < 0:
+                            raise ValueError(
+                                "Unterminated MySQL authentication plugin name"
+                            )
+                        plugin_bytes = payload[offset:plugin_end]
+                        try:
+                            plugin = plugin_bytes.decode("ascii")
+                        except UnicodeDecodeError as exc:
+                            raise ValueError(
+                                "Invalid MySQL authentication plugin name"
+                            ) from exc
+                        if not plugin or not all(
+                            char.isalnum() or char in "_-."
+                            for char in plugin
+                        ):
+                            raise ValueError(
+                                "Invalid MySQL authentication plugin name"
+                            )
+                        data["authentication_plugin"] = plugin
+                        offset = plugin_end + 1
+
+                elif not (capabilities & 0x00080000):
+                    # Without plugin_auth, no authentication-plugin field
+                    # is advertised; don't consume arbitrary trailing bytes.
+
+                    pass
+
+                if offset != len(payload):
+                    raise ValueError("Unexpected trailing MySQL handshake bytes")
+
+                data["capabilities"] = [
+                    name
+                    for bit, name in capability_names.items()
+                    if capabilities & bit
+                ]
+
+            data["handshake_complete"] = True
+            data["fingerprint"] = {
+                "protocol": "mysql",
+                "server_family": server_family,
+                "server_version": server_version,
+                "capability_flags": capabilities,
+                "authentication_plugin": data["authentication_plugin"],
+                "confidence": 0.98,
+            }
+
+            evidence = [
+                "MySQL protocol-10 initial handshake parsed successfully",
+                f"MySQL server version: {server_version}",
+                f"MySQL connection ID: {connection_id}",
+                f"MySQL capability flags: 0x{capabilities:08x}",
+            ]
+            if data["authentication_plugin"]:
+                evidence.append(
+                    "Server-advertised authentication plugin: "
+                    + data["authentication_plugin"]
+                )
+
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="mysql",
+                success=True,
+                identification_method="mysql_initial_handshake",
+                confidence=0.98,
+                timestamp=self._timestamp(),
+                data=data,
+                evidence=tuple(evidence),
+            )
+
+        except (TimeoutError, ConnectionResetError, OSError, ValueError, struct.error) as exc:
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol="mysql",
+                success=False,
+                identification_method="mysql_handshake_invalid",
+                confidence=0.0,
+                timestamp=self._timestamp(),
+                evidence=(
+                    f"MySQL handshake failed: {type(exc).__name__}: {exc}",
+                ),
+                error=f"mysql_handshake_invalid: {type(exc).__name__}: {exc}",
+            )
+        finally:
+            sock.close()
+
+    def _probe_dns(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+        transport: str,
+    ) -> ProtocolObservation:
+        """Probe DNS over UDP or TCP and preserve structured DNS intelligence."""
+
+        from dataclasses import asdict
+
+        dns_probe = DnsProbe(timeout=self._timeout)
+
+        observation = dns_probe.probe(
+            target,
+            address,
+            address_family,
+            port,
+            transport=transport,
+        )
+
+        data = asdict(observation)
+
+        return ProtocolObservation(
+            target=target,
+            address=address,
+            address_family=address_family,
+            port=port,
+            transport=transport,
+            protocol="dns",
+            success=observation.success,
+            identification_method=observation.identification_method,
+            confidence=observation.confidence,
+            timestamp=observation.timestamp,
+            data=data,
+            evidence=observation.evidence,
+            error=observation.error,
         )
 
     def _probe_smtp(
@@ -4140,17 +5201,100 @@ class ProtocolProbe:
 
                 search_from = next_newline + 1
 
-    def _probe_http(
-        self,
-        target: str,
-        address: str,
-        address_family: str,
-        port: int,
-        *,
-        https: bool,
-    ) -> ProtocolObservation:
+    def _probe_http(self, target, address, address_family, port, *, https):
         scheme = "https" if https else "http"
-        url = f"{scheme}://{self._format_host(address, address_family)}:{port}/"
+        host = self._format_host(address, address_family)
+        url = f"{scheme}://{host}:{port}/"
+
+        def build_data(response, method, body_probe=None):
+            headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+            status = int(response.status)
+            http_version = self._http_version(getattr(response, "version", None))
+
+            data = {
+                "scheme": scheme,
+                "requested_url": url,
+                "final_url": response.geturl(),
+                "redirected": response.geturl() != url,
+                "method_used": method,
+                "status_code": status,
+                "reason": getattr(response, "reason", None),
+                "http_version": http_version,
+                "server": headers.get("server"),
+                "content_type": headers.get("content-type"),
+                "content_length": headers.get("content-length"),
+                "location": headers.get("location"),
+                "allow": headers.get("allow"),
+                "headers": headers,
+            }
+
+            if body_probe is not None:
+                data["body_probe"] = body_probe
+
+            if https:
+                data["tls"] = self._tls_metadata(response)
+
+            return data
+
+        def evidence_for(data):
+            evidence = [
+                f"HTTP status: {data.get('status_code')}",
+                f"HTTP version: {data.get('http_version')}",
+            ]
+
+            if data.get("server"):
+                evidence.append(f"Server: {data['server']}")
+            if data.get("content_type"):
+                evidence.append(f"Content-Type: {data['content_type']}")
+            if data.get("location"):
+                evidence.append(f"Location: {data['location']}")
+
+            if https:
+                tls = data.get("tls", {})
+                for key, label in (
+                    ("version", "TLS version"),
+                    ("cipher", "TLS cipher"),
+                    ("certificate_subject", "Certificate subject"),
+                    ("certificate_issuer", "Certificate issuer"),
+                ):
+                    if tls.get(key):
+                        evidence.append(f"{label}: {tls[key]}")
+
+            return evidence
+
+        def perform_get():
+            request = urllib.request.Request(
+                url,
+                method="GET",
+                headers={
+                    "User-Agent": "SentinelForge/1.0 ProtocolProbe",
+                    "Accept": "*/*",
+                    "Range": f"bytes=0-{max(0, self._max_body_bytes - 1)}",
+                    "Connection": "close",
+                },
+            )
+
+            context = None
+            if https and self._config is not None:
+                context = ssl_context(self._config)
+
+            response = urllib.request.urlopen(
+                request,
+                timeout=self._timeout,
+                context=context,
+            )
+
+            try:
+                body = response.read(self._max_body_bytes)
+                return response, {
+                    "attempted": True,
+                    "bytes_read": len(body),
+                    "truncated": len(body) >= self._max_body_bytes,
+                    "sha256": hashlib.sha256(body).hexdigest(),
+                }
+            except Exception:
+                response.close()
+                raise
 
         request = urllib.request.Request(
             url,
@@ -4167,85 +5311,14 @@ class ProtocolProbe:
             if https and self._config is not None:
                 context = ssl_context(self._config)
 
-            if context is None:
-                response = urllib.request.urlopen(
-                    request,
-                    timeout=self._timeout,
-                )
-            else:
-                response = urllib.request.urlopen(
-                    request,
-                    timeout=self._timeout,
-                    context=context,
-                )
+            response = urllib.request.urlopen(
+                request,
+                timeout=self._timeout,
+                context=context,
+            )
 
             try:
-                headers = {
-                    str(key).lower(): str(value)
-                    for key, value in response.headers.items()
-                }
-
-                status = int(response.status)
-                http_version = getattr(response, "version", None)
-
-                data: dict[str, Any] = {
-                    "scheme": scheme,
-                    "status_code": status,
-                    "http_version": self._http_version(http_version),
-                    "server": headers.get("server"),
-                    "content_type": headers.get("content-type"),
-                    "content_length": headers.get("content-length"),
-                    "location": headers.get("location"),
-                    "headers": headers,
-                }
-
-                if https:
-                    tls_info = self._tls_metadata(response)
-                    data["tls"] = tls_info
-
-                evidence = [
-                    f"{scheme.upper()} responded with HTTP "
-                    f"{status}"
-                ]
-
-                if data["server"]:
-                    evidence.append(
-                        f"Server header: {data['server']}"
-                    )
-
-                if data["content_type"]:
-                    evidence.append(
-                        f"Content-Type: {data['content_type']}"
-                    )
-
-                if data["location"]:
-                    evidence.append(
-                        f"Location: {data['location']}"
-                    )
-
-                if https:
-                    evidence.append("Protocol confirmed as HTTPS/TLS")
-
-                    tls_info = data.get("tls", {})
-                    if tls_info.get("version"):
-                        evidence.append(
-                            f"TLS version: {tls_info['version']}"
-                        )
-                    if tls_info.get("cipher"):
-                        evidence.append(
-                            f"TLS cipher: {tls_info['cipher']}"
-                        )
-                    if tls_info.get("certificate_subject"):
-                        evidence.append(
-                            f"Certificate subject: "
-                            f"{tls_info['certificate_subject']}"
-                        )
-                    if tls_info.get("certificate_issuer"):
-                        evidence.append(
-                            f"Certificate issuer: "
-                            f"{tls_info['certificate_issuer']}"
-                        )
-
+                data = build_data(response, "HEAD")
                 return ProtocolObservation(
                     target=target,
                     address=address,
@@ -4256,85 +5329,91 @@ class ProtocolProbe:
                     success=True,
                     identification_method="http_head",
                     confidence=0.99,
-                    timestamp=self._timestamp(),
+                    timestamp=time.time(),
                     data=data,
-                    evidence=tuple(evidence),
+                    evidence=evidence_for(data),
+                    error=None,
                 )
             finally:
                 response.close()
 
         except urllib.error.HTTPError as exc:
-            headers = {
-                str(key).lower(): str(value)
-                for key, value in exc.headers.items()
-            }
+            if exc.code not in {405, 501}:
+                try:
+                    data = build_data(exc, "HEAD")
+                    return ProtocolObservation(
+                        target=target,
+                        address=address,
+                        address_family=address_family,
+                        port=port,
+                        transport="tcp",
+                        protocol=scheme,
+                        success=True,
+                        identification_method="http_head_error_response",
+                        confidence=0.99,
+                        timestamp=time.time(),
+                        data=data,
+                        evidence=evidence_for(data),
+                        error=None,
+                    )
+                finally:
+                    exc.close()
 
-            data = {
-                "scheme": scheme,
-                "status_code": int(exc.code),
-                "http_version": None,
-                "server": headers.get("server"),
-                "content_type": headers.get("content-type"),
-                "content_length": headers.get("content-length"),
-                "location": headers.get("location"),
-                "headers": headers,
-            }
+            exc.close()
 
-            evidence = [
-                f"{scheme.upper()} responded with HTTP {exc.code}"
-            ]
-
-            if headers.get("server"):
-                evidence.append(
-                    f"Server header: {headers['server']}"
+            try:
+                response, body_probe = perform_get()
+                try:
+                    data = build_data(response, "GET", body_probe)
+                    return ProtocolObservation(
+                        target=target,
+                        address=address,
+                        address_family=address_family,
+                        port=port,
+                        transport="tcp",
+                        protocol=scheme,
+                        success=True,
+                        identification_method="http_get_fallback",
+                        confidence=0.99,
+                        timestamp=time.time(),
+                        data=data,
+                        evidence=evidence_for(data) + [
+                            f"GET body bytes read: {body_probe['bytes_read']}",
+                        ],
+                        error=None,
+                    )
+                finally:
+                    response.close()
+            except ssl.SSLError as fallback_exc:
+                return self._error_observation(
+                    target, address, address_family, port, scheme,
+                    "tls_error", fallback_exc
                 )
-
-            return ProtocolObservation(
-                target=target,
-                address=address,
-                address_family=address_family,
-                port=port,
-                transport="tcp",
-                protocol=scheme,
-                success=True,
-                identification_method="http_head_error_response",
-                confidence=0.99,
-                timestamp=self._timestamp(),
-                data=data,
-                evidence=tuple(evidence),
-            )
+            except (urllib.error.URLError, TimeoutError, ConnectionResetError) as fallback_exc:
+                return self._error_observation(
+                    target, address, address_family, port, scheme,
+                    "connection_failed", fallback_exc
+                )
+            except OSError as fallback_exc:
+                return self._error_observation(
+                    target, address, address_family, port, scheme,
+                    "socket_error", fallback_exc
+                )
 
         except ssl.SSLError as exc:
             return self._error_observation(
-                target,
-                address,
-                address_family,
-                port,
-                scheme,
-                "tls_error",
-                exc,
+                target, address, address_family, port, scheme,
+                "tls_error", exc
             )
-
         except (urllib.error.URLError, TimeoutError, ConnectionResetError) as exc:
             return self._error_observation(
-                target,
-                address,
-                address_family,
-                port,
-                scheme,
-                "connection_failed",
-                exc,
+                target, address, address_family, port, scheme,
+                "connection_failed", exc
             )
-
         except OSError as exc:
             return self._error_observation(
-                target,
-                address,
-                address_family,
-                port,
-                scheme,
-                "socket_error",
-                exc,
+                target, address, address_family, port, scheme,
+                "socket_error", exc
             )
 
     def _probe_ssh(
@@ -4637,6 +5716,19 @@ class ProtocolProbe:
                 server_payload[offset:offset + 4],
             )[0]
 
+            result["algorithm_profile"] = self._classify_ssh_algorithms(
+                result
+            )
+            result["capabilities"] = self._analyze_ssh_capabilities(
+                result
+            )
+            result["fingerprint"] = self._build_ssh_fingerprint(
+                {
+                    **result,
+                    "capabilities": result["capabilities"],
+                }
+            )
+
             return result
 
         except (
@@ -4647,6 +5739,273 @@ class ProtocolProbe:
             struct.error,
         ):
             return None
+
+    @staticmethod
+    def _classify_ssh_algorithms(
+        negotiation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Classify advertised SSH algorithms without claiming negotiation."""
+
+        categories = {
+            "kex_algorithms": "kex",
+            "server_host_key_algorithms": "host_key",
+            "encryption_algorithms_client_to_server": "encryption",
+            "encryption_algorithms_server_to_client": "encryption",
+            "mac_algorithms_client_to_server": "mac",
+            "mac_algorithms_server_to_client": "mac",
+            "compression_algorithms_client_to_server": "compression",
+            "compression_algorithms_server_to_client": "compression",
+        }
+
+        profile: dict[str, Any] = {
+            "kex": [],
+            "host_key": [],
+            "encryption": [],
+            "mac": [],
+            "compression": [],
+            "legacy_algorithms": [],
+            "weak_algorithms": [],
+            "unknown_algorithms": [],
+            "anomalies": [],
+        }
+
+        for field_name, category in categories.items():
+            for algorithm in negotiation.get(field_name, []):
+                classification = ProtocolProbe._classify_ssh_algorithm(
+                    category,
+                    algorithm,
+                )
+
+                entry = {
+                    "algorithm": algorithm,
+                    "classification": classification,
+                }
+                profile[category].append(entry)
+
+                if classification == "legacy":
+                    profile["legacy_algorithms"].append(
+                        {
+                            "category": category,
+                            "algorithm": algorithm,
+                        }
+                    )
+                elif classification == "weak":
+                    profile["weak_algorithms"].append(
+                        {
+                            "category": category,
+                            "algorithm": algorithm,
+                        }
+                    )
+                elif classification == "unknown":
+                    profile["unknown_algorithms"].append(
+                        {
+                            "category": category,
+                            "algorithm": algorithm,
+                        }
+                    )
+
+        required_fields = (
+            "kex_algorithms",
+            "server_host_key_algorithms",
+            "encryption_algorithms_client_to_server",
+            "encryption_algorithms_server_to_client",
+            "mac_algorithms_client_to_server",
+            "mac_algorithms_server_to_client",
+            "compression_algorithms_client_to_server",
+            "compression_algorithms_server_to_client",
+        )
+
+        for field_name in required_fields:
+            if not negotiation.get(field_name):
+                profile["anomalies"].append(
+                    f"empty_{field_name}"
+                )
+
+        if negotiation.get("first_kex_follows"):
+            profile["anomalies"].append(
+                "first_kex_follows_set"
+            )
+
+        return profile
+
+    @staticmethod
+    def _classify_ssh_algorithm(
+        category: str,
+        algorithm: str,
+    ) -> str:
+        """Classify an advertised SSH algorithm conservatively."""
+
+        name = algorithm.lower()
+
+        if category == "kex":
+            if name in {
+                "diffie-hellman-group1-sha1",
+                "diffie-hellman-group14-sha1",
+                "diffie-hellman-group-exchange-sha1",
+            }:
+                return "legacy"
+            if "sha1" in name:
+                return "legacy"
+            if name.startswith("curve25519-") or name in {
+                "diffie-hellman-group14-sha256",
+                "diffie-hellman-group16-sha512",
+                "diffie-hellman-group18-sha512",
+            }:
+                return "modern"
+            if name in {
+                "ext-info-s",
+                "kex-strict-s-v00@openssh.com",
+            }:
+                return "modern"
+            return "unknown"
+
+        if category == "host_key":
+            if name == "ssh-dss":
+                return "weak"
+            if name == "ssh-rsa":
+                return "legacy"
+            if name in {
+                "ssh-ed25519",
+                "rsa-sha2-256",
+                "rsa-sha2-512",
+                "ecdsa-sha2-nistp256",
+                "ecdsa-sha2-nistp384",
+                "ecdsa-sha2-nistp521",
+            }:
+                return "modern"
+            return "unknown"
+
+        if category == "encryption":
+            if name in {
+                "arcfour",
+                "arcfour128",
+                "arcfour256",
+                "3des-cbc",
+                "blowfish-cbc",
+                "cast128-cbc",
+                "idea-cbc",
+            }:
+                return "weak"
+            if name.endswith("-cbc"):
+                return "legacy"
+            if name in {
+                "chacha20-poly1305@openssh.com",
+                "aes128-ctr",
+                "aes192-ctr",
+                "aes256-ctr",
+                "aes128-gcm@openssh.com",
+                "aes256-gcm@openssh.com",
+            }:
+                return "modern"
+            return "unknown"
+
+        if category == "mac":
+            if name in {
+                "hmac-md5",
+                "hmac-md5-96",
+                "hmac-sha1",
+                "hmac-sha1-96",
+                "umac-64",
+                "umac-64-etm@openssh.com",
+            }:
+                return "legacy"
+            if "hmac-sha2-" in name or "umac-128" in name:
+                return "modern"
+            return "unknown"
+
+        if category == "compression":
+            if name in {"none", "zlib", "zlib@openssh.com"}:
+                return "modern"
+            return "unknown"
+
+        return "unknown"
+
+    @staticmethod
+    def _analyze_ssh_capabilities(
+        negotiation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Interpret SSH capability markers from the server advertisement."""
+
+        kex_algorithms = [
+            str(item)
+            for item in negotiation.get("kex_algorithms", [])
+        ]
+
+        extensions = [
+            item
+            for item in kex_algorithms
+            if item.startswith("ext-info-")
+            or item.startswith("kex-strict-")
+        ]
+
+        return {
+            "extensions": extensions,
+            "ext_info": any(
+                item == "ext-info-s"
+                for item in extensions
+            ),
+            "strict_kex": any(
+                item.startswith("kex-strict-")
+                for item in extensions
+            ),
+            "first_kex_follows": bool(
+                negotiation.get("first_kex_follows")
+            ),
+        }
+
+    @staticmethod
+    def _build_ssh_fingerprint(
+        negotiation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a deterministic fingerprint from observed SSH capabilities."""
+
+        fingerprint_fields = (
+            "kex_algorithms",
+            "server_host_key_algorithms",
+            "encryption_algorithms_client_to_server",
+            "encryption_algorithms_server_to_client",
+            "mac_algorithms_client_to_server",
+            "mac_algorithms_server_to_client",
+            "compression_algorithms_client_to_server",
+            "compression_algorithms_server_to_client",
+            "languages_client_to_server",
+            "languages_server_to_client",
+        )
+
+        canonical = "|".join(
+            f"{field}="
+            + ",".join(
+                str(item)
+                for item in negotiation.get(field, [])
+            )
+            for field in fingerprint_fields
+        )
+
+        observation_sha256 = hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+
+        return {
+            "protocol": "ssh",
+            "message_type": negotiation.get("message_type"),
+            "negotiation_complete": bool(
+                negotiation.get("negotiation_complete")
+            ),
+            "observation_sha256": observation_sha256,
+            "algorithm_counts": {
+                field: len(negotiation.get(field, []))
+                for field in fingerprint_fields
+            },
+            "capabilities": dict(
+                negotiation.get("capabilities", {})
+            ),
+            "confidence": 0.95,
+            "evidence": (
+                "SSH observation fingerprint derived from the "
+                "server SSH_MSG_KEXINIT algorithm advertisement; "
+                "this is not a host-key fingerprint."
+            ),
+        }
 
     @staticmethod
     def _recv_exact(
@@ -4701,7 +6060,6 @@ class ProtocolProbe:
             if not der_cert:
                 return result
 
-            import hashlib
 
             result["certificate_sha256"] = hashlib.sha256(
                 der_cert
@@ -4755,83 +6113,18 @@ class ProtocolProbe:
     def _tls_metadata(response: Any) -> dict[str, Any]:
         """Extract TLS connection and peer-certificate metadata."""
 
-        result: dict[str, Any] = {
-            "version": None,
-            "cipher": None,
-            "certificate_sha256": None,
-            "certificate_subject": None,
-            "certificate_issuer": None,
-            "certificate_serial": None,
-            "certificate_not_before": None,
-            "certificate_not_after": None,
-            "certificate_sans": [],
-            "public_key_type": None,
-            "public_key_size": None,
-            "signature_hash": None,
-        }
+        sock = getattr(response, "fp", None)
+        sock = getattr(sock, "raw", None)
+        sock = getattr(sock, "_sock", None)
+
+        if sock is None:
+            return ProtocolProbe._empty_tls_metadata()
 
         try:
-            sock = getattr(response, "fp", None)
-            sock = getattr(sock, "raw", None)
-            sock = getattr(sock, "_sock", None)
-
-            if sock is None:
-                return result
-
-            result["version"] = sock.version()
-
-            cipher = sock.cipher()
-            if cipher:
-                result["cipher"] = cipher[0]
-
-            der_cert = sock.getpeercert(binary_form=True)
-            if not der_cert:
-                return result
-
-            result["certificate_sha256"] = (
-                __import__("hashlib")
-                .sha256(der_cert)
-                .hexdigest()
-            )
-
-            cert = x509.load_der_x509_certificate(der_cert)
-
-            result["certificate_subject"] = cert.subject.rfc4514_string()
-            result["certificate_issuer"] = cert.issuer.rfc4514_string()
-            result["certificate_serial"] = str(cert.serial_number)
-            result["certificate_not_before"] = (
-                cert.not_valid_before_utc.isoformat()
-            )
-            result["certificate_not_after"] = (
-                cert.not_valid_after_utc.isoformat()
-            )
-
-            try:
-                san = cert.extensions.get_extension_for_class(
-                    x509.SubjectAlternativeName
-                ).value
-                result["certificate_sans"] = san.get_values_for_type(
-                    x509.DNSName
-                ) + san.get_values_for_type(x509.IPAddress).__str__().split()
-            except x509.ExtensionNotFound:
-                pass
-
-            public_key = cert.public_key()
-            result["public_key_type"] = type(public_key).__name__
-            result["public_key_size"] = getattr(
-                public_key, "key_size", None
-            )
-
-            signature_hash = cert.signature_hash_algorithm
-            if signature_hash is not None:
-                result["signature_hash"] = signature_hash.name
-
+            return ProtocolProbe._tls_socket_metadata(sock)
         except (AttributeError, OSError, ValueError, TypeError):
-            return result
+            return ProtocolProbe._empty_tls_metadata()
 
-        return result
-
-    @staticmethod
     def _certificate_name(value: Any) -> str | None:
         parts: list[str] = []
 

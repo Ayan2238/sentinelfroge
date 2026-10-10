@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import TYPE_CHECKING
 
 from sentinelforge.core.port_discovery import PortDiscovery, PortDiscoveryConfig
@@ -9,6 +10,7 @@ from sentinelforge.core.service_identifier import ServiceIdentifier
 from sentinelforge.core.banner_grabber import BannerGrabber
 from sentinelforge.core.version_identifier import VersionIdentifier
 from sentinelforge.core.protocol_probe import ProtocolProbe
+from sentinelforge.core.dns_probe import DnsProbe
 from sentinelforge.modules.base import Severity
 from sentinelforge.plugins.base import BasePlugin, PluginResult
 
@@ -82,6 +84,29 @@ def _build_ftp_composite_fingerprint(
     }
 
     return fingerprint
+
+
+def _mysql_security_findings(
+    plugin: "NetworkPlugin",
+    target: "Target",
+    observation: object,
+) -> list:
+    """Derive conservative MySQL security findings from observed probe data."""
+
+    if getattr(observation, "protocol", "") != "mysql":
+        return []
+
+    if getattr(observation, "success", False) is not True:
+        return []
+
+    data = getattr(observation, "data", {}) or {}
+    if data.get("handshake_complete") is not True:
+        return []
+
+    # A greeting alone does not establish a security vulnerability.
+    # Add specific checks only when their evidence and classification
+    # criteria are documented and independently testable.
+    return []
 
 
 def _ftp_security_findings(
@@ -1059,6 +1084,19 @@ class NetworkPlugin(BasePlugin):
             for observation in protocol_observations
         }
 
+        dns_probe = DnsProbe(timeout=config.timeout)
+        dns_udp_observations = []
+
+        for address in addresses:
+            dns_observation = dns_probe.probe(
+                target.host,
+                address,
+                "ipv6" if ipaddress.ip_address(address).version == 6 else "ipv4",
+                53,
+                transport="udp",
+            )
+            dns_udp_observations.append(dns_observation)
+
         for service in services:
             key = (service.address, service.port, service.transport)
             banner = banner_by_key.get(key)
@@ -1191,6 +1229,13 @@ class NetworkPlugin(BasePlugin):
                 ):
                     result.add_finding(security_finding)
 
+                for security_finding in _mysql_security_findings(
+                    self,
+                    target,
+                    protocol,
+                ):
+                    result.add_finding(security_finding)
+
         result.metadata["ports_scanned"] = discovery.ports_scanned
         result.metadata["open_ports"] = list(discovery.open_ports)
         result.metadata["services_identified"] = len(services)
@@ -1205,6 +1250,75 @@ class NetworkPlugin(BasePlugin):
             for observation in protocol_observations
             if observation.success
         )
+        result.metadata["dns_udp_addresses_probed"] = len(
+            dns_udp_observations
+        )
+        result.metadata["dns_udp_responsive"] = sum(
+            1
+            for observation in dns_udp_observations
+            if observation.success
+        )
+
+        for observation in dns_udp_observations:
+            if not observation.success:
+                continue
+
+            result.add_finding(
+                self._finding(
+                    title=f"DNS Service Identified: UDP/53 on {observation.address}",
+                    severity=Severity.INFO,
+                    target=target,
+                    description=(
+                        f"DNS responded over UDP on "
+                        f"{observation.address}:53."
+                    ),
+                    evidence=list(observation.evidence),
+                    recommendation=(
+                        "Verify that the DNS service is expected and "
+                        "appropriately secured."
+                    ),
+                    tags=[
+                        "network",
+                        "dns",
+                        "udp",
+                        "protocol-identification",
+                    ],
+                    raw_data={
+                        "address": observation.address,
+                        "address_family": observation.address_family,
+                        "port": observation.port,
+                        "transport": observation.transport,
+                        "protocol": "dns",
+                        "success": observation.success,
+                        "query_name": observation.query_name,
+                        "query_type": observation.query_type,
+                        "query_class": observation.query_class,
+                        "response_code": observation.response_code,
+                        "response_code_name": observation.response_code_name,
+                        "flags": observation.flags,
+                        "question_count": observation.question_count,
+                        "answer_count": observation.answer_count,
+                        "authority_count": observation.authority_count,
+                        "additional_count": observation.additional_count,
+                        "answers": observation.answers,
+                        "authorities": observation.authorities,
+                        "additionals": observation.additionals,
+                        "latency_ms": observation.latency_ms,
+                        "truncated": observation.truncated,
+                        "tcp_fallback_attempted": (
+                            observation.tcp_fallback_attempted
+                        ),
+                        "tcp_fallback_successful": (
+                            observation.tcp_fallback_successful
+                        ),
+                        "identification_method": (
+                            observation.identification_method
+                        ),
+                        "confidence": observation.confidence,
+                        "error": observation.error,
+                    },
+                )
+            )
 
         result.status = "success"
         return result

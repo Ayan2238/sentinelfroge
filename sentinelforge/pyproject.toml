@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dns = ["dnspython>=2.4"]
+mongodb = ["pymongo>=4.6"]
 neo4j = ["neo4j>=6.0"]
 full = [
     "dnspython>=2.4",

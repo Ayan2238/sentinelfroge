@@ -10,7 +10,7 @@ from sentinelforge.core.config import ConfigManager
 from sentinelforge.core.protocol_probe import ProtocolProbe
 
 
-class TestHandler(http.server.BaseHTTPRequestHandler):
+class LocalTLSHandler(http.server.BaseHTTPRequestHandler):
     server_version = "SentinelForgeTLS/1.0"
     sys_version = ""
 
@@ -23,7 +23,7 @@ class TestHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def main():
+def test_https_protocol_probe():
     with tempfile.TemporaryDirectory() as tmp:
         cert = os.path.join(tmp, "cert.pem")
         key = os.path.join(tmp, "key.pem")
@@ -43,7 +43,7 @@ def main():
             stderr=subprocess.DEVNULL,
         )
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), TestHandler)
+        server = http.server.HTTPServer(("127.0.0.1", 0), LocalTLSHandler)
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(cert, key)
@@ -106,6 +106,3 @@ def main():
             server.shutdown()
             thread.join(timeout=2)
 
-
-if __name__ == "__main__":
-    main()

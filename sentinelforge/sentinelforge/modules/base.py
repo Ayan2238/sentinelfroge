@@ -91,6 +91,7 @@ class Finding:
             "cve": self.cve,
             "cvss": self.cvss,
             "tags": self.tags,
+            "raw_data": self.raw_data,
         })
 
 

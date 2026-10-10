@@ -222,6 +222,10 @@ if _HAS_CLICK:
                     recommendation=f.get("recommendation", ""),
                     references=f.get("references", []),
                     confidence=f.get("confidence", 1.0),
+                    cve=f.get("cve", []),
+                    cvss=f.get("cvss"),
+                    tags=f.get("tags", []),
+                    raw_data=f.get("raw_data", {}),
                 )
                 for f in sess.findings
             ]
