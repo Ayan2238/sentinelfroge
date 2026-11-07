@@ -14,6 +14,7 @@ import hashlib
 import ipaddress
 import socket
 import struct
+import sys
 import ssl
 import urllib.error
 import urllib.request
@@ -111,6 +112,16 @@ class ProtocolProbe:
                 port,
             )
 
+        if service_name in {
+            "oracle", "oracle-db", "oracle database", "oracle-database", "tns"
+        } or port == 1521:
+            return self._probe_oracle(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
         if service_name in {"mssql", "sqlserver", "microsoft sql server", "tds"} or port == 1433:
             return self._probe_mssql(
                 target,
@@ -137,6 +148,14 @@ class ProtocolProbe:
 
         if service_name in {"mysql", "mariadb"} or port == 3306:
             return self._probe_mysql(
+                target,
+                address,
+                address_family,
+                port,
+            )
+
+        if service_name in {"redis", "redis-server", "resp"} or port == 6379:
+            return self._probe_redis(
                 target,
                 address,
                 address_family,
@@ -735,6 +754,192 @@ class ProtocolProbe:
                 except OSError:
                     pass
 
+    def _probe_oracle(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Identify an Oracle listener using a bounded TNS CONNECT handshake."""
+
+        protocol = "oracle"
+        try:
+            family = (
+                socket.AF_INET6
+                if address_family.lower() in {"ipv6", "af_inet6"}
+                else socket.AF_INET
+            )
+
+            connect_data = (
+                f"(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={address})"
+                f"(PORT={port}))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
+            ).encode("ascii")
+            if len(connect_data) > 1024:
+                raise ValueError("TNS CONNECT descriptor exceeds size limit")
+
+            # TNS 3.19 CONNECT layout: descriptor begins at packet offset 74.
+            # Keep each field at its protocol-defined offset.
+            prefix = bytearray(66)
+            struct.pack_into(
+                "!HHHHHHHHHH",
+                prefix,
+                0,
+                0x013F,  # Desired TNS version 319
+                0x012C,  # Lowest compatible version 300
+                0x0C01,  # Don't care; receive attention; no attention processing
+                8192,    # Session data unit
+                32767,   # Transport data unit
+                0x7F08,  # Protocol characteristics
+                0,       # Line turnaround
+                1,       # Required fixed field
+                len(connect_data),
+                74,      # CONNECT descriptor offset from packet start
+            )
+            prefix[14:16] = (1).to_bytes(2, byteorder=sys.byteorder)
+            struct.pack_into("!I", prefix, 20, 512)  # 32-bit maximum CONNECT data
+            struct.pack_into("!II", prefix, 50, 8192, 32767)
+            body = bytes(prefix) + connect_data
+            packet = struct.pack("!HHBBH", len(body) + 8, 0, 1, 0, 0) + body
+
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.settimeout(self._timeout)
+                sock.connect((address, port))
+                sock.sendall(packet)
+
+                deadline = time.monotonic() + self._timeout
+
+                def recv_exact(size: int) -> bytes:
+                    data = bytearray()
+                    while len(data) < size:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("TNS response deadline exceeded")
+                        sock.settimeout(remaining)
+                        try:
+                            chunk = sock.recv(size - len(data))
+                        except socket.timeout as exc:
+                            raise TimeoutError(
+                                "TNS response deadline exceeded"
+                            ) from exc
+                        if not chunk:
+                            raise ValueError("Truncated TNS response")
+                        data.extend(chunk)
+                    return bytes(data)
+
+                header = recv_exact(8)
+                packet_length, checksum, packet_type, flags, header_checksum = (
+                    struct.unpack("!HHBBH", header)
+                )
+
+                if packet_length < 8:
+                    raise ValueError("Invalid TNS packet length")
+                if packet_length > min(self._max_body_bytes, 4096):
+                    raise ValueError("TNS response exceeds configured size limit")
+                if packet_type not in {2, 4, 5}:
+                    raise ValueError(
+                        f"Unexpected TNS response packet type: {packet_type}"
+                    )
+
+                payload_length = packet_length - 8
+                payload = recv_exact(payload_length) if payload_length else b""
+                response = header + payload
+
+            if packet_type == 2:  # ACCEPT
+                if len(response) < 32:
+                    raise ValueError("TNS ACCEPT packet is too short")
+
+                version, options, sdu, tdu = struct.unpack(
+                    "!HHHH", response[8:16]
+                )
+                value_one_bytes = response[16:18]
+                data_length, data_offset = struct.unpack(
+                    "!HH", response[18:22]
+                )
+                if version < 0x012C or value_one_bytes not in (
+                    bytes((0, 1)), bytes((1, 0))
+                ):
+                    raise ValueError("Invalid TNS ACCEPT version or fixed field")
+                if sdu == 0 or tdu == 0:
+                    raise ValueError("Invalid TNS ACCEPT SDU/TDU")
+
+                if data_length:
+                    if (
+                        data_offset < 32
+                        or data_offset > len(response)
+                        or data_length > len(response) - data_offset
+                    ):
+                        raise ValueError("Invalid TNS ACCEPT connect-data bounds")
+                elif data_offset and not 32 <= data_offset <= len(response):
+                    raise ValueError("Invalid TNS ACCEPT connect-data offset")
+
+                if version >= 0x013B:
+                    if len(response) < 41:
+                        raise ValueError("Truncated extended TNS ACCEPT packet")
+                    large_sdu, large_tdu = struct.unpack("!II", response[32:40])
+                    if large_sdu and large_sdu < 512:
+                        raise ValueError("Invalid extended TNS ACCEPT SDU")
+                    if large_tdu and large_tdu < 255:
+                        raise ValueError("Invalid extended TNS ACCEPT TDU")
+
+                if version >= 0x013E and len(response) < 45:
+                    raise ValueError("Truncated TNS ACCEPT flags field")
+
+                result_name = "oracle_tns_accept"
+                confidence = 0.99
+                classification = "accept"
+            elif packet_type == 4:  # REFUSE
+                if len(response) < 12:
+                    raise ValueError("TNS REFUSE packet is too short")
+                refusal_length = int.from_bytes(response[10:12], "big")
+                if refusal_length != len(response) - 12:
+                    raise ValueError("Invalid TNS REFUSE data length")
+                result_name = "oracle_tns_refuse"
+                confidence = 0.98
+                classification = "refuse"
+            else:  # REDIRECT
+                if len(response) < 10:
+                    raise ValueError("TNS REDIRECT packet is too short")
+                redirect_length = int.from_bytes(response[8:10], "big")
+                if redirect_length == 0 or redirect_length != len(response) - 10:
+                    raise ValueError("Invalid TNS REDIRECT data length")
+                redirect_data = response[10:]
+                if b"(" not in redirect_data or b"ADDRESS" not in redirect_data.upper():
+                    raise ValueError("TNS REDIRECT data lacks an address descriptor")
+                result_name = "oracle_tns_redirect"
+                confidence = 0.98
+                classification = "redirect"
+
+            data = {
+                "tns_packet_type": packet_type,
+                "tns_packet_type_name": classification.upper(),
+                "response_length": len(response),
+                "credentials_sent": False,
+                "sql_executed": False,
+            }
+            return ProtocolObservation(
+                target=target,
+                address=address,
+                address_family=address_family,
+                port=port,
+                transport="tcp",
+                protocol=protocol,
+                success=True,
+                identification_method=result_name,
+                confidence=confidence,
+                timestamp=self._timestamp(),
+                data=data,
+                evidence=(
+                    f"Received a structurally valid Oracle TNS {classification.upper()} response; "
+                    "no credentials or SQL were sent.",
+                ),
+            )
+        except (OSError, ValueError, struct.error) as exc:
+            return self._error_observation(
+                target, address, address_family, port, protocol,
+                "oracle_tns_failed", exc,
+            )
+
     def _probe_mssql(
         self,
         target: str,
@@ -1169,6 +1374,149 @@ class ProtocolProbe:
             )
         finally:
             sock.close()
+
+    def _probe_redis(
+        self,
+        target: str,
+        address: str,
+        address_family: str,
+        port: int,
+    ) -> ProtocolObservation:
+        """Identify Redis with a bounded, unauthenticated RESP PING."""
+
+        deadline = time.monotonic() + self._timeout
+        sock = None
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Redis connection deadline exceeded')
+            sock = socket.create_connection((address, port), timeout=remaining)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Redis connection deadline exceeded')
+            sock.settimeout(remaining)
+
+            # RESP array encoding avoids ambiguity in inline-command parsing.
+            sock.sendall(b"*1\r\n$4\r\nPING\r\n")
+
+            # Read one bounded RESP line, accepting a line exactly at the limit.
+            limit = min(self._max_body_bytes, 4096)
+            response = bytearray()
+            while True:
+                line_end = response.find(b"\r\n")
+                if line_end >= 0:
+                    if line_end + 2 != len(response):
+                        raise ValueError(
+                            "Unexpected trailing bytes after Redis RESP line"
+                        )
+                    break
+
+                if len(response) >= limit:
+                    raise ValueError(
+                        "Redis RESP response line exceeded size limit"
+                    )
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Redis response deadline exceeded")
+                sock.settimeout(remaining)
+                chunk = sock.recv(min(512, limit - len(response)))
+                if not chunk:
+                    raise ValueError(
+                        "Connection closed before a complete RESP line"
+                    )
+                response.extend(chunk)
+
+                if b"\n" in response and b"\r\n" not in response:
+                    raise ValueError("Malformed RESP line ending")
+                if (
+                    b"\r" in response
+                    and not response.endswith(b"\r")
+                    and b"\r\n" not in response
+                ):
+                    raise ValueError("Malformed RESP line ending")
+            if not response.endswith(b"\r\n"):
+                raise ValueError("Malformed or truncated RESP line")
+
+            try:
+                line = bytes(response[:-2]).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("Redis RESP response is not valid UTF-8") from exc
+
+            if "\r" in line or "\n" in line:
+                raise ValueError("Malformed control characters in Redis RESP line")
+
+            data = {
+                "response_type": line[:1],
+                "response": line[1:] if line else "",
+                "command": "PING",
+                "authentication_attempted": False,
+            }
+
+            if line == "+PONG":
+                return ProtocolObservation(
+                    target=target,
+                    address=address,
+                    address_family=address_family,
+                    port=port,
+                    transport="tcp",
+                    protocol="redis",
+                    success=True,
+                    identification_method="redis_resp_ping",
+                    confidence=0.99,
+                    timestamp=self._timestamp(),
+                    data=data,
+                    evidence=(
+                        "Server returned the exact RESP simple-string PONG "
+                        "reply to a Redis-compatible PING command.",
+                        "No credentials or data-access commands were sent.",
+                    ),
+                )
+
+            # These are Redis-specific server error prefixes. Generic RESP
+            # errors such as -ERR are deliberately insufficient for proof.
+            redis_errors = ("NOAUTH ", "NOPERM ", "DENIED ", "LOADING ", "MASTERDOWN ")
+            if line.startswith("-") and line[1:].startswith(redis_errors):
+                data["server_error_code"] = line[1:].split(" ", 1)[0]
+                return ProtocolObservation(
+                    target=target,
+                    address=address,
+                    address_family=address_family,
+                    port=port,
+                    transport="tcp",
+                    protocol="redis",
+                    success=True,
+                    identification_method="redis_resp_error_reply",
+                    confidence=0.90,
+                    timestamp=self._timestamp(),
+                    data=data,
+                    evidence=(
+                        "Server returned a Redis-recognized error code in a "
+                        "RESP error reply to PING; authentication was not attempted.",
+                    ),
+                )
+
+            raise ValueError(
+                "Response was not a recognized Redis PING reply"
+            )
+
+        except (TimeoutError, ConnectionResetError, OSError, ValueError) as exc:
+            return self._error_observation(
+                target,
+                address,
+                address_family,
+                port,
+                "redis",
+                "redis_resp_invalid",
+                exc,
+            )
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    # Cleanup errors must not override the probe observation.
+                    pass
 
     def _probe_dns(
         self,
